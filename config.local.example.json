@@ -1,0 +1,20 @@
+{
+  "BOT_TOKEN": "",
+  "ADMIN_IDS": [
+    123456789
+  ],
+  "API_ID": 0,
+  "API_HASH": "",
+  "SHOP_TITLE": "Milfa Shop",
+  "CURRENCY": "$",
+  "CRYPTOPAY_TOKEN": "",
+  "CRYPTOPAY_FIAT": "USD",
+  "LOG_CHANNEL_ID": 0,
+  "RU_TOPUP_CHAT_ID": 0,
+  "UA_TOPUP_CHAT_ID": 0,
+  "SUPPORT_USERNAME": "@support",
+  "SUPPORT_URL": "https://t.me/support",
+  "REVIEWS_URL": "",
+  "REQUIRED_CHANNEL": "",
+  "REQUIRED_CHANNEL_URL": ""
+}

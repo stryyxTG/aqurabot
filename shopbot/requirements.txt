@@ -1,0 +1,6 @@
+aiogram>=3.0
+aiosqlite
+telethon
+opentele
+openpyxl
+python-dotenv
