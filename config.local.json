@@ -1,0 +1,21 @@
+{
+  "BOT_TOKEN": "8631090887:AAFftWxKlrUXbsCRAWSgRDSBsR7hL5lpfL8",
+  "ADMIN_IDS": [
+    5003414426,                       
+    8700330523
+  ],
+  "API_ID": 30397767,
+  "API_HASH": "e6f43134eaf775348a487cd2589b3cfe",
+  "SHOP_TITLE": "Milfa Shop",
+  "CURRENCY": "$",
+  "CRYPTOPAY_TOKEN": "595795:AA80fCC0Q30KzpJabYPdaPLZVhT8pdX3Ydb",
+  "CRYPTOPAY_FIAT": "USD",
+  "LOG_CHANNEL_ID": -1003911212515,
+  "RU_TOPUP_CHAT_ID": -1003721340861,
+  "UA_TOPUP_CHAT_ID": -1004292812805,
+  "SUPPORT_USERNAME": "@milfa72",
+  "SUPPORT_URL": "https://t.me/milfa72",
+  "REVIEWS_URL": "https://t.me/+epx2tR8tsi02MTli",
+  "REQUIRED_CHANNEL": "-1004319912659",
+  "REQUIRED_CHANNEL_URL": "https://t.me/Milfa_Shop_INFO"
+}

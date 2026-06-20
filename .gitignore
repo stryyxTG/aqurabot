@@ -36,7 +36,6 @@ bot.log
 data/
 __pycache__
 .env
-config.local.json
 logs/
 sessions/
 users/
