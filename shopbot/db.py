@@ -2102,6 +2102,7 @@ class PurchaseResult:
     products: list | None = None
     total: float = 0.0
     unavailable_ids: list[int] | None = None
+    batch_id: str | None = None
 
 
 async def purchase_product(user_id: int, product_id: int) -> PurchaseResult:
@@ -2156,7 +2157,7 @@ async def purchase_product(user_id: int, product_id: int) -> PurchaseResult:
         )
         await db.execute("DELETE FROM cart_items WHERE product_id = ?", (product_id,))
         await db.commit()
-        return PurchaseResult(True, "ok", new_balance, product_id, [product_id], [product], price)
+        return PurchaseResult(True, "ok", new_balance, product_id, [product_id], [product], price, batch_id=batch_id)
 
 
 async def purchase_cart(user_id: int) -> PurchaseResult:
@@ -2217,7 +2218,7 @@ async def purchase_cart(user_id: int) -> PurchaseResult:
             )
         await db.execute("DELETE FROM cart_items WHERE user_id = ?", (user_id,))
         await db.commit()
-        return PurchaseResult(True, "ok", new_balance, product_ids=product_ids, products=products, total=total)
+        return PurchaseResult(True, "ok", new_balance, product_ids=product_ids, products=products, total=total, batch_id=batch_id)
 
 
 async def get_stats() -> dict:

@@ -1650,9 +1650,35 @@ def zip_directory(source_dir: Path, archive_path: Path) -> None:
                 archive.write(path, path.relative_to(source_dir.parent))
 
 
+def zip_directory_contents(source_dir: Path, archive_path: Path) -> None:
+    with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as archive:
+        for path in source_dir.rglob("*"):
+            if path.is_file():
+                archive.write(path, path.relative_to(source_dir))
+
+
 def safe_filename_part(value: object, fallback: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9_.+-]+", "_", str(value or "").strip())
     return cleaned.strip("._") or fallback
+
+
+def product_account_label(product) -> str:
+    return safe_filename_part(product["phone"] or product["product_id"], str(product["product_id"]))
+
+
+def unique_account_label(product, used: set[str]) -> str:
+    label = product_account_label(product)
+    if label not in used:
+        used.add(label)
+        return label
+    for counter in range(2, 1000):
+        candidate = f"{label}_{counter}"
+        if candidate not in used:
+            used.add(candidate)
+            return candidate
+    fallback = f"{label}_{int(datetime.now(timezone.utc).timestamp())}"
+    used.add(fallback)
+    return fallback
 
 
 def mask_cart_phone(phone: object) -> str:
@@ -1664,7 +1690,7 @@ def mask_cart_phone(phone: object) -> str:
     return f"{text[:-4]}****"
 
 
-async def build_tdata_archive(product, output_dir: Path) -> Path:
+async def save_product_tdata(product, tdata_dir: Path) -> None:
     try:
         from opentele.api import API, UseCurrentSession
         from opentele.tl import TelegramClient as OpenTeleClient
@@ -1675,26 +1701,88 @@ async def build_tdata_archive(product, output_dir: Path) -> Path:
     if not session_file:
         raise RuntimeError("Файл .session не найден.")
 
-    file_label = safe_filename_part(product["phone"] or product["product_id"], str(product["product_id"]))
-    tdata_dir = output_dir / f"tdata"
-    archive_path = output_dir / f"account_{file_label}_tdata.zip"
     client = None
     try:
         client = OpenTeleClient(str(session_file), api=API.TelegramDesktop)
         tdesk = await client.ToTDesktop(flag=UseCurrentSession)
+        tdata_dir.parent.mkdir(parents=True, exist_ok=True)
         save_result = tdesk.SaveTData(str(tdata_dir))
         if inspect.isawaitable(save_result):
             await save_result
         if not tdata_dir.exists():
             raise RuntimeError("tdata не была создана конвертером.")
-        zip_directory(tdata_dir, archive_path)
-        return archive_path
     finally:
         if client is not None:
             try:
                 await client.disconnect()
             except Exception:
                 pass
+
+
+async def build_tdata_archive(product, output_dir: Path) -> Path:
+    file_label = product_account_label(product)
+    tdata_dir = output_dir / "tdata"
+    archive_path = output_dir / f"account_{file_label}_tdata.zip"
+    await save_product_tdata(product, tdata_dir)
+    zip_directory(tdata_dir, archive_path)
+    return archive_path
+
+
+def build_session_json_archive(products: list, output_dir: Path, batch_id: str) -> tuple[Path, list[str]]:
+    archive_path = output_dir / f"accounts_{safe_filename_part(batch_id, 'batch')}_session_json.zip"
+    used_labels: set[str] = set()
+    errors: list[str] = []
+    added = 0
+    with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as archive:
+        for product in products:
+            session_file = product_session_file(product)
+            if not session_file:
+                errors.append(f"{product['phone'] or product['product_id']}: session не найдена")
+                continue
+            label = unique_account_label(product, used_labels)
+            try:
+                archive.write(session_file, f"{label}.session")
+                metadata = load_existing_session_metadata(session_file)
+                if not metadata:
+                    write_uploaded_session_metadata(session_file, {}, file_name=session_file.name)
+                    metadata = load_existing_session_metadata(session_file)
+                metadata = normalize_session_metadata(
+                    metadata,
+                    default_api_id=settings.api_id,
+                    default_api_hash=settings.api_hash,
+                )
+                metadata["session_file"] = f"{label}.session"
+                archive.writestr(
+                    f"{label}.json",
+                    json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
+                )
+                added += 1
+            except Exception as exc:
+                errors.append(f"{product['phone'] or product['product_id']}: {exc}")
+    if added == 0:
+        raise RuntimeError(errors[0] if errors else "Нет доступных session-файлов.")
+    return archive_path, errors
+
+
+async def build_batch_tdata_archive(products: list, output_dir: Path, batch_id: str) -> tuple[Path, list[str]]:
+    root_dir = output_dir / "tdata_accounts"
+    archive_path = output_dir / f"accounts_{safe_filename_part(batch_id, 'batch')}_tdata.zip"
+    used_labels: set[str] = set()
+    errors: list[str] = []
+    added = 0
+    root_dir.mkdir(parents=True, exist_ok=True)
+    for product in products:
+        label = unique_account_label(product, used_labels)
+        try:
+            await save_product_tdata(product, root_dir / label / "tdata")
+            added += 1
+        except Exception as exc:
+            logger.exception("Could not build batch tdata for product #%s", product["product_id"])
+            errors.append(f"{product['phone'] or product['product_id']}: {exc}")
+    if added == 0:
+        raise RuntimeError(errors[0] if errors else "Не удалось подготовить tdata.")
+    zip_directory_contents(root_dir, archive_path)
+    return archive_path, errors
 
 
 def normalize_country_search(value: object) -> str:
@@ -3704,17 +3792,40 @@ async def cart_checkout(query: CallbackQuery):
         skipped_text += f"Заменено недоступных из корзины: <b>{len(replaced_unavailable)}</b>\n"
     if removed_unavailable:
         skipped_text += f"Не удалось заменить: <b>{len(removed_unavailable)}</b>\n"
+    delivered_products = result.products or []
+    if len(delivered_products) > 1 and result.batch_id:
+        purchases = await list_user_batch_purchases(query.from_user.id, result.batch_id)
+        account_rows = []
+        for idx, item in enumerate(purchases, 1):
+            account_rows.append([
+                inline_button(
+                    text=f"{idx}. {item['title']} • {item['phone'] or '—'}",
+                    callback_data=f"my_purchase:{item['purchase_id']}:0:{result.batch_id}",
+                )
+            ])
+        await safe_edit(
+            query.message,
+            f"{ICON_SUCCESS} <b>Корзина оплачена</b>\n\n"
+            f"Выдано товаров: <b>{len(delivered_products)}</b>\n"
+            f"Списано: <b>{fmt_money(result.total)}</b>\n"
+            f"{skipped_text}"
+            f"{ICON_COIN} Новый баланс: <b>{fmt_money(result.balance)}</b>\n\n"
+            "Выберите формат получения аккаунтов. К0d по каждому аккаунту можно получить в <b>Моих покупках</b> внутри этого заказа.",
+            purchase_batch_kb(batch_id=result.batch_id, page=0, account_rows=account_rows, can_bulk_download=True),
+        )
+        return
+
     await safe_edit(
         query.message,
         f"{ICON_SUCCESS} <b>Корзина оплачена</b>\n\n"
-        f"Выдано товаров: <b>{len(result.products or [])}</b>\n"
+        f"Выдано товаров: <b>{len(delivered_products)}</b>\n"
         f"Списано: <b>{fmt_money(result.total)}</b>\n"
         f"{skipped_text}"
         f"{ICON_COIN} Новый баланс: <b>{fmt_money(result.balance)}</b>\n\n"
         "Данные товаров отправляю ниже.",
         purchase_success_kb(is_admin(query.from_user.id)),
     )
-    for product in result.products or []:
+    for product in delivered_products:
         await _send_purchase_delivery(query, product)
 
 
@@ -4154,16 +4265,28 @@ async def user_download_session(query: CallbackQuery):
         await query.answer("Файл .session не найден.", show_alert=True)
         return
 
-    await query.answer("Отправляю .session...")
-    file_label = safe_filename_part(product["phone"] or product_id, str(product_id))
-    await query.message.answer_document(
-        FSInputFile(session_file, filename=f"account_{file_label}.session"),
-        caption=(
+    await query.answer("Готовлю session+json...")
+    with tempfile.TemporaryDirectory(prefix=f"session_json_{product_id}_") as tmp:
+        tmp_dir = Path(tmp)
+        try:
+            archive_path, errors = build_session_json_archive([product], tmp_dir, str(product_id))
+        except Exception as exc:
+            await query.message.answer(
+                f"{ICON_BLOCK} <b>Не удалось подготовить session+json</b>\n\n"
+                f"<code>{html.escape(str(exc) or type(exc).__name__)}</code>"
+            )
+            return
+        caption = (
             f"{ICON_PURCHASE_TAG} <b>{render_rich_text(product['title'])}</b>\n"
             f"Телефон: <code>{html.escape(product['phone'] or '—')}</code>\n"
-            "Файл .session"
-        ),
-    )
+            "Архив session+json"
+        )
+        if errors:
+            caption += "\n\nЧасть файлов пропущена."
+        await query.message.answer_document(
+            FSInputFile(archive_path, filename=f"account_{product_account_label(product)}_session_json.zip"),
+            caption=caption,
+        )
 
 
 @dp.callback_query(F.data.startswith("user_download_tdata:"))
@@ -4235,12 +4358,12 @@ async def batch_download_ask(query: CallbackQuery):
         await query.answer("Нет доступных session-файлов.", show_alert=True)
         return
 
-    fmt = ".session" if file_type == "session" else "tdata"
+    fmt = "session+json ZIP" if file_type == "session" else "tdata ZIP"
     text = (
         f"{ICON_FOLDER} <b>Скачать аккаунты?</b>\n\n"
         f"Формат: <b>{html.escape(fmt)}</b>\n"
         f"Аккаунтов: <b>{len(downloadable)}</b>\n\n"
-        "Бот отправит файлы подряд."
+        "Бот подготовит и отправит один ZIP-архив."
     )
     await safe_edit(query.message, text, batch_download_confirm_kb(batch_id, page, file_type))
 
@@ -4264,44 +4387,60 @@ async def batch_download(query: CallbackQuery):
         await query.answer("Нет доступных session-файлов.", show_alert=True)
         return
 
-    await query.answer("Отправляю файлы...")
+    await query.answer("Готовлю архив...")
     await safe_edit(
         query.message,
-        f"{ICON_FOLDER} <b>Отправляю файлы</b>\n\n"
-        f"Формат: <b>{html.escape('.session' if file_type == 'session' else 'tdata')}</b>\n"
+        f"{ICON_FOLDER} <b>Готовлю архив</b>\n\n"
+        f"Формат: <b>{html.escape('session+json ZIP' if file_type == 'session' else 'tdata ZIP')}</b>\n"
         f"Аккаунтов: <b>{len(downloadable)}</b>",
         purchase_batch_kb(batch_id=batch_id, page=page, can_bulk_download=True),
     )
 
-    if file_type == "session":
-        for item in downloadable:
-            session_file = product_session_file(item)
-            if not session_file:
-                continue
-            file_label = safe_filename_part(item["phone"] or item["product_id"], str(item["product_id"]))
-            await query.message.answer_document(
-                FSInputFile(session_file, filename=f"account_{file_label}.session"),
-                caption=f"{render_rich_text(item['title'])} • <code>{html.escape(item['phone'] or '—')}</code>",
-            )
-        return
-
-    with tempfile.TemporaryDirectory(prefix=f"batch_tdata_{safe_filename_part(batch_id, 'batch')}_") as tmp:
+    with tempfile.TemporaryDirectory(prefix=f"batch_{safe_filename_part(batch_id, 'batch')}_") as tmp:
         tmp_dir = Path(tmp)
-        for item in downloadable:
-            try:
-                archive_path = await build_tdata_archive(item, tmp_dir)
-            except Exception as exc:
-                logger.exception("Could not build batch tdata for product #%s", item["product_id"])
-                await query.message.answer(
-                    f"{ICON_BLOCK} <b>tdata не готова</b>\n"
-                    f"{render_rich_text(item['title'])} • <code>{html.escape(item['phone'] or '—')}</code>\n"
-                    f"<code>{html.escape(str(exc) or type(exc).__name__)}</code>"
-                )
-                continue
-            await query.message.answer_document(
-                FSInputFile(archive_path, filename=archive_path.name),
-                caption=f"{render_rich_text(item['title'])} • <code>{html.escape(item['phone'] or '—')}</code>",
+        try:
+            if file_type == "session":
+                archive_path, errors = build_session_json_archive(downloadable, tmp_dir, batch_id)
+                caption_format = "session+json"
+            else:
+                archive_path, errors = await build_batch_tdata_archive(downloadable, tmp_dir, batch_id)
+                caption_format = "tdata"
+        except Exception as exc:
+            logger.exception("Could not build batch archive %s for %s", file_type, batch_id)
+            await query.message.answer(
+                f"{ICON_BLOCK} <b>Архив не готов</b>\n\n"
+                f"<code>{html.escape(str(exc) or type(exc).__name__)}</code>"
             )
+            return
+
+        caption = (
+            f"{ICON_FOLDER} <b>Архив аккаунтов</b>\n\n"
+            f"Формат: <b>{html.escape(caption_format)}</b>\n"
+            f"Аккаунтов в заказе: <b>{len(downloadable)}</b>"
+        )
+        if errors:
+            caption += "\n\nПропущено:\n" + "\n".join(f"  • {html.escape(error)}" for error in errors[:5])
+            if len(errors) > 5:
+                caption += f"\n  ... и ещё {len(errors) - 5}"
+        await query.message.answer_document(
+            FSInputFile(archive_path, filename=archive_path.name),
+            caption=caption,
+        )
+
+    await safe_edit(
+        query.message,
+        f"{ICON_SUCCESS} <b>Архив отправлен</b>\n\n"
+        "К0d по каждому аккаунту можно получить в списке заказа ниже.",
+        purchase_batch_kb(batch_id=batch_id, page=page, account_rows=[
+            [
+                inline_button(
+                    text=f"{idx}. {item['title']} • {item['phone'] or '—'}",
+                    callback_data=f"my_purchase:{item['purchase_id']}:{page}:{batch_id}",
+                )
+            ]
+            for idx, item in enumerate(downloadable, 1)
+        ], can_bulk_download=True),
+    )
 
 
 @dp.callback_query(F.data.startswith("buy_group:"))

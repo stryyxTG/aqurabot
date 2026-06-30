@@ -108,7 +108,7 @@ def purchase_history_detail_kb(page: int, product_id: int | None = None, batch_i
     if product_id is not None:
         rows.append([InlineKeyboardButton(text="Получить к0d", callback_data=f"request_code:{product_id}", icon_custom_emoji_id=BTN_ICON_CHECK)])
         rows.append([
-            InlineKeyboardButton(text=".session", callback_data=f"user_download_session:{product_id}"),
+            InlineKeyboardButton(text="session+json", callback_data=f"user_download_session:{product_id}"),
             InlineKeyboardButton(text="tdata", callback_data=f"user_download_tdata:{product_id}"),
         ])
     back_callback = f"purchase_batch:{batch_id}:{page}" if batch_id else f"menu_purchases:{page}"
@@ -130,8 +130,8 @@ def purchase_batch_kb(
 ) -> InlineKeyboardMarkup:
     rows = list(account_rows or [])
     if can_bulk_download:
-        rows.append([InlineKeyboardButton(text="Скачать tdata аккаунтов", callback_data=f"batch_download_ask:tdata:{batch_id}:{page}")])
-        rows.append([InlineKeyboardButton(text="Скачать .session аккаунтов", callback_data=f"batch_download_ask:session:{batch_id}:{page}")])
+        rows.append([InlineKeyboardButton(text="Скачать tdata ZIP", callback_data=f"batch_download_ask:tdata:{batch_id}:{page}")])
+        rows.append([InlineKeyboardButton(text="Скачать session+json ZIP", callback_data=f"batch_download_ask:session:{batch_id}:{page}")])
     rows.append([InlineKeyboardButton(text="Назад", callback_data=f"menu_purchases:{page}", icon_custom_emoji_id=BTN_ICON_BACK)])
     rows.append([InlineKeyboardButton(text="В меню", callback_data="menu_home", icon_custom_emoji_id=BTN_ICON_HOME)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -642,7 +642,7 @@ def purchase_waiting_kb(product_id: int, back_callback: str) -> InlineKeyboardMa
         inline_keyboard=[
             [InlineKeyboardButton(text="Получить к0d", callback_data=f"request_code:{product_id}")],
             [
-                InlineKeyboardButton(text=".session", callback_data=f"user_download_session:{product_id}"),
+                InlineKeyboardButton(text="session+json", callback_data=f"user_download_session:{product_id}"),
                 InlineKeyboardButton(text="tdata", callback_data=f"user_download_tdata:{product_id}"),
             ],
         ]
@@ -654,7 +654,7 @@ def code_received_kb(product_id: int) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="Запросить к0d снова", callback_data=f"request_code:{product_id}")],
             [
-                InlineKeyboardButton(text=".session", callback_data=f"user_download_session:{product_id}"),
+                InlineKeyboardButton(text="session+json", callback_data=f"user_download_session:{product_id}"),
                 InlineKeyboardButton(text="tdata", callback_data=f"user_download_tdata:{product_id}"),
             ],
             [InlineKeyboardButton(text="Связаться с поддержкой", url=settings.support_url, icon_custom_emoji_id=BTN_ICON_SUPPORT)],
