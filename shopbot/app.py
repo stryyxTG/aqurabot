@@ -49,6 +49,7 @@ from .db import (
     get_available_countries,
     get_catalog_country,
     get_balance,
+    get_crypto_invoice,
     get_db_conn,
     find_existing_product_identity,
     get_product,
@@ -79,6 +80,7 @@ from .db import (
     list_topup_reviewers,
     list_user_purchases,
     mark_product_session_cleanup_disabled,
+    mark_crypto_invoice_status,
     process_crypto_topup,
     purchase_cart,
     reject_topup_request,
@@ -86,6 +88,7 @@ from .db import (
     reset_revenue_stats,
     record_channel_member,
     record_channel_join_request,
+    record_crypto_invoice,
     rename_catalog_country,
     remove_catalog_country,
     remove_product_department,
@@ -2488,6 +2491,21 @@ async def call_crypto_pay(method: str, params: dict = None) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
+def crypto_invoice_amount_matches(invoice: dict, expected_amount: float) -> bool:
+    api_amount_raw = invoice.get("amount")
+    if api_amount_raw is None:
+        return True
+    api_amount = parse_float(str(api_amount_raw))
+    return api_amount is not None and abs(api_amount - expected_amount) <= MONEY_EPSILON
+
+
+def crypto_invoice_fiat_matches(invoice: dict, expected_fiat: str) -> bool:
+    api_fiat = (invoice.get("fiat") or "").strip().upper()
+    if not api_fiat:
+        return True
+    return api_fiat == (expected_fiat or "").strip().upper()
+
+
 @dp.callback_query(F.data == "user_topup_start")
 async def user_topup_start(query: CallbackQuery, state: FSMContext):
     await ensure_known_user(query)
@@ -2609,7 +2627,20 @@ async def user_topup_amount(message: Message, state: FSMContext):
 
     invoice = res["result"]
     pay_url = invoice["pay_url"]
-    invoice_id = invoice["invoice_id"]
+    invoice_id = str(invoice["invoice_id"])
+
+    try:
+        await record_crypto_invoice(
+            invoice_id=invoice_id,
+            user_id=message.from_user.id,
+            amount=credit_amount,
+            fiat=settings.cryptopay_fiat,
+            pay_url=pay_url,
+        )
+    except Exception:
+        logger.exception("Could not record CryptoPay invoice %s for user %s", invoice_id, message.from_user.id)
+        await message.answer("Счет создан, но не удалось сохранить его в базе. Создайте счет заново через минуту.")
+        return
 
     text = (
         f"{ICON_CRYPTO} <b>Счет Crypto Bot создан</b>\n\n"
@@ -2620,7 +2651,7 @@ async def user_topup_amount(message: Message, state: FSMContext):
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Оплатить", url=pay_url, icon_custom_emoji_id=BTN_ICON_PAY)],
-        [InlineKeyboardButton(text="Проверить оплату", callback_data=f"check_pay:{invoice_id}:{credit_amount}", icon_custom_emoji_id=BTN_ICON_CHECK)],
+        [InlineKeyboardButton(text="Проверить оплату", callback_data=f"check_pay:{invoice_id}", icon_custom_emoji_id=BTN_ICON_CHECK)],
         [InlineKeyboardButton(text="Отменить", callback_data="menu_home", icon_custom_emoji_id=BTN_ICON_CANCEL)]
     ])
     await message.answer(text, reply_markup=kb)
@@ -2705,9 +2736,31 @@ async def check_pay_callback(query: CallbackQuery):
     if not FEATURE_TOPUP_CRYPTO:
         await query.answer("Crypto Bot временно недоступен.", show_alert=True)
         return
-    parts = query.data.split(":")
-    invoice_id = parts[1]
-    amount = float(parts[2])
+    parts = (query.data or "").split(":", 2)
+    if len(parts) < 2 or not parts[1].strip():
+        await query.answer("Некорректный счет.", show_alert=True)
+        return
+
+    invoice_id = parts[1].strip()
+    stored_invoice = await get_crypto_invoice(invoice_id)
+    if not stored_invoice:
+        logger.warning("CryptoPay invoice check without local invoice: invoice=%s user=%s", invoice_id, query.from_user.id)
+        await query.answer("Счет не найден. Создайте новое пополнение.", show_alert=True)
+        return
+
+    invoice_user_id = int(stored_invoice["user_id"])
+    if invoice_user_id != query.from_user.id:
+        logger.warning(
+            "CryptoPay invoice ownership mismatch: invoice=%s owner=%s checker=%s",
+            invoice_id,
+            invoice_user_id,
+            query.from_user.id,
+        )
+        await query.answer("Это не ваш счет.", show_alert=True)
+        return
+
+    amount = float(stored_invoice["amount"])
+    fiat = (stored_invoice["fiat"] or settings.cryptopay_fiat).upper()
     
     res = await call_crypto_pay("getInvoices", {"invoice_ids": invoice_id})
     items = ((res.get("result") or {}).get("items") or []) if isinstance(res, dict) else []
@@ -2717,21 +2770,40 @@ async def check_pay_callback(query: CallbackQuery):
         return
 
     invoice = items[0]
-    status = invoice["status"]
+    if str(invoice.get("invoice_id") or invoice_id) != invoice_id:
+        logger.error("CryptoPay returned different invoice: requested=%s payload=%s", invoice_id, invoice)
+        await query.answer("Ошибка проверки счета. Напишите в поддержку.", show_alert=True)
+        return
+
+    status = invoice.get("status")
 
     if status == "paid":
-        processed, _new_balance = await process_crypto_topup(invoice_id, query.from_user.id, amount)
+        if not crypto_invoice_amount_matches(invoice, amount) or not crypto_invoice_fiat_matches(invoice, fiat):
+            logger.error(
+                "CryptoPay invoice amount mismatch: invoice=%s expected=%s %s payload=%s",
+                invoice_id,
+                amount,
+                fiat,
+                invoice,
+            )
+            await query.answer("Сумма счета не совпала. Напишите в поддержку.", show_alert=True)
+            return
+
+        await mark_crypto_invoice_status(invoice_id, "paid", str(invoice.get("paid_at") or ""))
+        processed, _new_balance = await process_crypto_topup(invoice_id, invoice_user_id, amount)
         if not processed:
             await query.answer("Этот счет уже был зачислен.", show_alert=True)
             await show_home(query)
             return
-        await log_purchase("crypto_topup", user_id=query.from_user.id, invoice_id=invoice_id, amount=amount)
+        await log_purchase("crypto_topup", user_id=invoice_user_id, invoice_id=invoice_id, amount=amount)
         await query.answer("Оплата получена. Баланс пополнен.", show_alert=True)
         await show_home(query)
     elif status == "expired":
+        await mark_crypto_invoice_status(invoice_id, "expired")
         await query.answer("Время оплаты счета истекло.", show_alert=True)
         await safe_edit(query.message, "<b>Счет просрочен.</b> Попробуйте создать новый.", back_to_main_kb(is_admin(query.from_user.id)))
     else:
+        await mark_crypto_invoice_status(invoice_id, str(status or "created"))
         await query.answer("Оплата еще не поступила. Попробуйте через минуту.", show_alert=True)
 
 

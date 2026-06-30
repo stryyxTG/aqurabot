@@ -139,6 +139,18 @@ async def init_db() -> None:
                 processed_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS crypto_invoices (
+                invoice_id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                amount REAL NOT NULL,
+                fiat TEXT NOT NULL,
+                pay_url TEXT,
+                status TEXT NOT NULL DEFAULT 'created',
+                created_at TEXT NOT NULL,
+                paid_at TEXT,
+                processed_at TEXT
+            );
+
             CREATE TABLE IF NOT EXISTS topup_requests (
                 request_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
@@ -1665,27 +1677,39 @@ async def process_crypto_topup(invoice_id: str, user_id: int, amount: float) -> 
     async with get_db_conn() as db:
         try:
             await db.execute("BEGIN IMMEDIATE")
+            now = utcnow()
+            amount = normalize_money(amount)
             await db.execute(
                 "INSERT INTO crypto_payments (invoice_id, user_id, amount, processed_at) VALUES (?, ?, ?, ?)",
-                (str(invoice_id), user_id, amount, utcnow()),
+                (str(invoice_id), user_id, amount, now),
             )
             async with db.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,)) as cursor:
                 row = await cursor.fetchone()
             current = float(row["balance"]) if row else 0.0
-            new_balance = current + amount
+            new_balance = normalize_money(current + amount)
             if row:
                 await db.execute(
                     "UPDATE users SET balance = ?, last_seen_at = ? WHERE user_id = ?",
-                    (new_balance, utcnow(), user_id),
+                    (new_balance, now, user_id),
                 )
             else:
                 await db.execute(
                     "INSERT INTO users (user_id, username, first_name, balance, joined_at, last_seen_at) VALUES (?, '', '', ?, ?, ?)",
-                    (user_id, new_balance, utcnow(), utcnow()),
+                    (user_id, new_balance, now, now),
                 )
             await db.execute(
                 "INSERT INTO balance_events (user_id, amount, kind, note, actor_id, created_at) VALUES (?, ?, 'topup', ?, NULL, ?)",
-                (user_id, amount, f"CryptoPay Invoice #{invoice_id}", utcnow()),
+                (user_id, amount, f"CryptoPay Invoice #{invoice_id}", now),
+            )
+            await db.execute(
+                """
+                UPDATE crypto_invoices
+                SET status = 'paid',
+                    paid_at = COALESCE(paid_at, ?),
+                    processed_at = ?
+                WHERE invoice_id = ?
+                """,
+                (now, now, str(invoice_id)),
             )
             await db.commit()
             return True, new_balance
@@ -1693,6 +1717,47 @@ async def process_crypto_topup(invoice_id: str, user_id: int, amount: float) -> 
             await db.rollback()
             balance = await get_balance(user_id)
             return False, balance
+
+
+async def record_crypto_invoice(
+    *,
+    invoice_id: str,
+    user_id: int,
+    amount: float,
+    fiat: str,
+    pay_url: str | None = None,
+) -> None:
+    async with get_db_conn() as db:
+        await db.execute(
+            """
+            INSERT INTO crypto_invoices (
+                invoice_id, user_id, amount, fiat, pay_url, status, created_at
+            ) VALUES (?, ?, ?, ?, ?, 'created', ?)
+            """,
+            (str(invoice_id), user_id, normalize_money(amount), (fiat or "").upper(), pay_url or "", utcnow()),
+        )
+        await db.commit()
+
+
+async def get_crypto_invoice(invoice_id: str):
+    async with get_db_conn() as db:
+        async with db.execute("SELECT * FROM crypto_invoices WHERE invoice_id = ?", (str(invoice_id),)) as cursor:
+            return await cursor.fetchone()
+
+
+async def mark_crypto_invoice_status(invoice_id: str, status: str, paid_at: str | None = None) -> None:
+    async with get_db_conn() as db:
+        if paid_at:
+            await db.execute(
+                "UPDATE crypto_invoices SET status = ?, paid_at = COALESCE(paid_at, ?) WHERE invoice_id = ?",
+                (status, paid_at, str(invoice_id)),
+            )
+        else:
+            await db.execute(
+                "UPDATE crypto_invoices SET status = ? WHERE invoice_id = ?",
+                (status, str(invoice_id)),
+            )
+        await db.commit()
 
 
 async def create_topup_request(
