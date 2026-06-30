@@ -33,6 +33,7 @@ wheels/
 
 # Project specific
 bot.log
+config.local.json
 data/
 __pycache__
 .env

@@ -29,6 +29,7 @@ BTN_ICON_TG_ACCOUNTS = "6028346797368283073"
 BTN_ICON_TG_PREMIUM = "6028338546736107668"
 BTN_ICON_TG_STARS = "5463289097336405244"
 BTN_ICON_PERIOD = "5983150113483134607"
+AGREEMENT_URL = "https://telegra.ph/Politika-konfidencialnosti-06-30-45"
 
 
 def main_menu_kb(is_admin: bool) -> InlineKeyboardMarkup:
@@ -51,10 +52,20 @@ def main_menu_kb(is_admin: bool) -> InlineKeyboardMarkup:
 
 def help_menu_kb(is_admin: bool) -> InlineKeyboardMarkup:
     rows = [
+        [InlineKeyboardButton(text="Условия", url=AGREEMENT_URL)],
         [InlineKeyboardButton(text="Связаться с поддержкой", url=settings.support_url, icon_custom_emoji_id=BTN_ICON_SUPPORT)],
         [InlineKeyboardButton(text="В меню", callback_data="menu_home", icon_custom_emoji_id=BTN_ICON_HOME)],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def agreement_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Условия", url=AGREEMENT_URL)],
+            [InlineKeyboardButton(text="Принять", callback_data="agreement_accept", icon_custom_emoji_id=BTN_ICON_CHECK)],
+        ]
+    )
 
 
 def purchase_success_kb(is_admin: bool) -> InlineKeyboardMarkup:

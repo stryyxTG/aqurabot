@@ -45,7 +45,8 @@ async def init_db() -> None:
                 first_name TEXT,
                 balance REAL NOT NULL DEFAULT 0,
                 joined_at TEXT NOT NULL,
-                last_seen_at TEXT NOT NULL
+                last_seen_at TEXT NOT NULL,
+                agreement_accepted_at TEXT
             );
 
             CREATE TABLE IF NOT EXISTS products (
@@ -234,6 +235,12 @@ async def init_db() -> None:
             await db.execute("ALTER TABLE products ADD COLUMN skip_session_cleanup INTEGER NOT NULL DEFAULT 0")
             logger.info("Добавлена колонка skip_session_cleanup в таблицу products")
 
+        async with db.execute("PRAGMA table_info(users)") as cursor:
+            user_columns = {row["name"] for row in await cursor.fetchall()}
+        if "agreement_accepted_at" not in user_columns:
+            await db.execute("ALTER TABLE users ADD COLUMN agreement_accepted_at TEXT")
+            logger.info("Добавлена колонка agreement_accepted_at в таблицу users")
+
         async with db.execute("PRAGMA table_info(purchases)") as cursor:
             purchase_columns = {row["name"] for row in await cursor.fetchall()}
         if "batch_id" not in purchase_columns:
@@ -380,6 +387,29 @@ async def get_user(user_id: int):
     async with get_db_conn() as db:
         async with db.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)) as cursor:
             return await cursor.fetchone()
+
+
+async def has_user_accepted_agreement(user_id: int) -> bool:
+    async with get_db_conn() as db:
+        async with db.execute("SELECT agreement_accepted_at FROM users WHERE user_id = ?", (user_id,)) as cursor:
+            row = await cursor.fetchone()
+            return bool(row and (row["agreement_accepted_at"] or "").strip())
+
+
+async def accept_user_agreement(user_id: int) -> None:
+    async with get_db_conn() as db:
+        now = utcnow()
+        await db.execute(
+            """
+            INSERT INTO users (user_id, username, first_name, joined_at, last_seen_at, agreement_accepted_at)
+            VALUES (?, '', '', ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                last_seen_at = excluded.last_seen_at,
+                agreement_accepted_at = COALESCE(users.agreement_accepted_at, excluded.agreement_accepted_at)
+            """,
+            (user_id, now, now, now),
+        )
+        await db.commit()
 
 
 async def list_user_ids() -> list[int]:

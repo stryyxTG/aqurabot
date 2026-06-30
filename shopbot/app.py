@@ -25,6 +25,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import CallbackQuery, ChatJoinRequest, ChatMemberUpdated, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message, TelegramObject
 
 from .db import (
+    accept_user_agreement,
     add_balance,
     add_catalog_country,
     add_product_group_to_cart,
@@ -62,6 +63,7 @@ from .db import (
     get_stuck_products,
     get_topup_request,
     get_user,
+    has_user_accepted_agreement,
     init_db,
     is_topup_reviewer,
     list_catalog_countries,
@@ -109,6 +111,7 @@ from .db import (
 )
 from .config import Settings, load_settings
 from .keyboards import (
+    agreement_kb,
     admin_catalog_kb,
     admin_clean_confirm_kb,
     admin_clean_kb,
@@ -179,7 +182,7 @@ from .proxy_store import load_global_proxy, save_global_proxy
 from .proxy_utils import check_proxy_connectivity, format_proxy_summary, parse_proxy_input
 from .paths import product_session_base_path, SESSIONS_DIR, ROOT_DIR
 from .session_flow import LoginExpiredError, ShopSessionManager
-from .states import AdminAddProductStates, AdminBroadcastStates, AdminCatalogStates, AdminCleanStates, AdminProxyStates, AdminTopUpStates, AdminEditProductStates, AdminEditProductGroupStates, AdminSearchUserStates, AdminSearchProductStates, AdminDropsStates, UserTopUpStates, UserCartStates, ServiceOrderStates, AdminScanStates
+from .states import AdminAddProductStates, AdminBroadcastStates, AdminCardsStates, AdminCatalogStates, AdminCleanStates, AdminProxyStates, AdminTopUpStates, AdminEditProductStates, AdminEditProductGroupStates, AdminSearchUserStates, AdminSearchProductStates, AdminDropsStates, UserTopUpStates, UserCartStates, ServiceOrderStates, AdminScanStates
 
 
 logging.basicConfig(
@@ -204,13 +207,15 @@ PREMIUM_PRICES_RUB = {
     6: 1425.0,
     12: 2350.0,
 }
-FEATURE_TOPUP_RU = False
-FEATURE_TOPUP_UA = False
+FEATURE_TOPUP_RU = True
+FEATURE_TOPUP_UA = True
 FEATURE_TOPUP_CRYPTO = True
 FEATURE_TOPUP_OTHER = False
 FEATURE_CATALOG_PREMIUM = False
 FEATURE_CATALOG_STARS = False
 MIN_CRYPTO_TOPUP_AMOUNT = 0.1
+FALLBACK_USD_TO_UAH_RATE = 41.5
+UA_CARDS_META_KEY = "topup_cards_ua"
 MONEY_EPSILON = 0.000001
 TG_EMOJI_RE = re.compile(r'<tg-emoji\s+emoji-id=(["\'])(\d{5,32})\1>([^<>]{0,32})</tg-emoji>')
 TG_EMOJI_START_RE = re.compile(r'^\s*<tg-emoji\s+emoji-id=(["\'])(\d{5,32})\1>([^<>]{0,32})</tg-emoji>\s*')
@@ -365,6 +370,25 @@ class SubscriptionMiddleware(BaseMiddleware):
         return await handler(event, data)
 
 
+class AgreementMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event: TelegramObject, data: dict):
+        user = data.get("event_from_user")
+        if not user or user.is_bot or is_admin(user.id):
+            return await handler(event, data)
+
+        if isinstance(event, CallbackQuery) and event.data in {"agreement_accept", "check_sub"}:
+            return await handler(event, data)
+
+        await ensure_known_user(event)
+        if await has_user_accepted_agreement(user.id):
+            return await handler(event, data)
+
+        await show_agreement(event)
+        if isinstance(event, CallbackQuery):
+            await event.answer()
+        return
+
+
 FSM_CALLBACK_WHITELIST = {
     AdminAddProductStates.waiting_add_method.state: ("admin_add_by_phone", "admin_add_by_session"),
     AdminAddProductStates.waiting_session_count.state: ("session_count_single", "session_count_bulk"),
@@ -381,6 +405,8 @@ FSM_CALLBACK_WHITELIST = {
 
 
 def is_fsm_callback_allowed(current_state: str, callback_data: str) -> bool:
+    if callback_data == "agreement_accept":
+        return True
     if callback_data.startswith("cancel_flow:"):
         return True
     for allowed in FSM_CALLBACK_WHITELIST.get(current_state, ()):
@@ -421,6 +447,14 @@ async def check_sub_callback(query: CallbackQuery):
         await start_logic(query)
     else:
         await query.answer("❌ Подписка не найдена.", show_alert=True)
+
+
+@dp.callback_query(F.data == "agreement_accept")
+async def agreement_accept(query: CallbackQuery):
+    await ensure_known_user(query)
+    await accept_user_agreement(query.from_user.id)
+    await query.answer("✅ Условия приняты.", show_alert=True)
+    await show_home(query)
 
 
 @dp.chat_join_request()
@@ -548,8 +582,8 @@ def topup_chat_id(method: str) -> int:
     return UA_TOPUP_CHAT_ID if method == "ua" else RU_TOPUP_CHAT_ID
 
 
-async def get_rub_to_uah_rate() -> tuple[float, str]:
-    url = "https://open.er-api.com/v6/latest/RUB"
+async def get_usd_to_uah_rate() -> tuple[float, str]:
+    url = "https://open.er-api.com/v6/latest/USD"
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=8) as resp:
@@ -558,13 +592,31 @@ async def get_rub_to_uah_rate() -> tuple[float, str]:
         if rate > 0:
             return rate, "курс API"
     except Exception as exc:
-        logger.warning("Could not fetch RUB->UAH rate, using fallback: %s", exc)
-    return float(settings.rub_to_uah_rate), "резервный курс"
+        logger.warning("Could not fetch USD->UAH rate, using fallback: %s", exc)
+    return FALLBACK_USD_TO_UAH_RATE, "резервный курс"
+
+
+async def get_ua_cards_text() -> str:
+    return (await get_app_meta(UA_CARDS_META_KEY) or "").strip()
+
+
+async def set_ua_cards_text(value: str) -> None:
+    await set_app_meta(UA_CARDS_META_KEY, (value or "").strip())
+
+
+def message_html_text(message: Message) -> str:
+    value = getattr(message, "html_text", None) or message.text or message.caption or ""
+    return str(value).strip()
+
+
+def cards_command_payload(message: Message) -> str:
+    html_text = message_html_text(message)
+    return re.sub(r"^/cards(?:@\w+)?(?:\s+)?", "", html_text, count=1, flags=re.IGNORECASE).strip()
 
 
 async def build_topup_quote(method: str, credit_amount: float) -> dict:
     if method == "ua":
-        rate, source = await get_rub_to_uah_rate()
+        rate, source = await get_usd_to_uah_rate()
         payment_amount = math.ceil(credit_amount * rate * 100) / 100
         return {
             "credit_amount": credit_amount,
@@ -582,17 +634,18 @@ async def build_topup_quote(method: str, credit_amount: float) -> dict:
     }
 
 
-def manual_topup_requisites(method: str, quote: dict) -> str:
+async def manual_topup_requisites(method: str, quote: dict) -> str:
     credit_amount = float(quote["credit_amount"])
     payment_amount = float(quote["payment_amount"])
     if method == "ua":
+        cards_text = await get_ua_cards_text()
+        cards_block = f"\n\n{cards_text}\n\n" if cards_text else "\n\n"
         return (
             f"{ICON_UA} <b>Пополнение украинской картой</b>\n\n"
             f"<b>К зачислению:</b> {fmt_money(credit_amount)}\n"
             f"<b>К оплате:</b> {payment_amount:.2f} UAH\n"
-            f"<b>Курс:</b> 1 RUB = {float(quote['rate']):.4f} UAH\n\n"
-            "<b>Pumb</b>\n"
-            "<code>5355 2800 3713 7914</code>\n\n"
+            f"<b>Курс:</b> 1 USD = {float(quote['rate']):.4f} UAH\n"
+            f"{cards_block}"
             f"{ICON_NOTICE} <b>После оплаты отправьте чек в формате PDF или скриншот PDF-файла</b>"
         )
     return (
@@ -1715,9 +1768,24 @@ async def show_home(target: Message | CallbackQuery) -> None:
         await target.answer(text, reply_markup=kb)
 
 
+async def show_agreement(target: Message | CallbackQuery) -> None:
+    text = (
+        f"{ICON_NOTICE} <b>Условия использования</b>\n\n"
+        "Перед первым использованием магазина ознакомьтесь с условиями и подтвердите согласие.\n\n"
+        "Нажимая «Принять», вы подтверждаете, что прочитали условия и согласны продолжить."
+    )
+    if isinstance(target, CallbackQuery):
+        await safe_edit(target.message, text, agreement_kb())
+    else:
+        await target.answer(text, reply_markup=agreement_kb())
+
+
 async def start_logic(target: Message | CallbackQuery) -> None:
-    """Единая логика входа: регистрация пользователя и показ меню."""
+    """Единая логика входа: регистрация пользователя, соглашение и показ меню."""
     await ensure_known_user(target)
+    if not is_admin(target.from_user.id) and not await has_user_accepted_agreement(target.from_user.id):
+        await show_agreement(target)
+        return
     await show_home(target)
 
 
@@ -2047,6 +2115,70 @@ async def cmd_delbalance(message: Message):
         f"User ID: <code>{user_id}</code>\n"
         f"{ICON_COIN} <b>Новый баланс:</b> 0.00",
         parse_mode=ParseMode.HTML
+    )
+
+
+@dp.message(Command("cards"))
+async def cmd_cards(message: Message, state: FSMContext):
+    await ensure_known_user(message)
+    if not is_admin(message.from_user.id):
+        await message.answer("Эта команда только для владельца.")
+        return
+
+    payload = cards_command_payload(message)
+    if payload:
+        if payload == "-":
+            await set_ua_cards_text("")
+            await state.clear()
+            await message.answer("Реквизиты украинской карты очищены.", reply_markup=admin_home_kb())
+            return
+        await set_ua_cards_text(payload)
+        await state.clear()
+        await message.answer(
+            "<b>Реквизиты украинской карты сохранены.</b>\n\n"
+            f"{payload}",
+            reply_markup=admin_home_kb(),
+        )
+        return
+
+    current_cards = await get_ua_cards_text()
+    current_block = current_cards if current_cards else "<i>Реквизиты сейчас пустые.</i>"
+    await state.set_state(AdminCardsStates.waiting_cards_text)
+    await message.answer(
+        "<b>Реквизиты украинской карты</b>\n\n"
+        f"{current_block}\n\n"
+        "Отправьте новый текст реквизитов одним сообщением.\n"
+        "Форматирование Telegram сохранится: жирный текст, моноширинный текст для копирования и переносы строк.\n\n"
+        "Чтобы очистить реквизиты, отправьте <code>-</code>.",
+        reply_markup=cancel_flow_kb("admin_home"),
+    )
+
+
+@dp.message(AdminCardsStates.waiting_cards_text)
+async def admin_cards_text(message: Message, state: FSMContext):
+    await ensure_known_user(message)
+    if not is_admin(message.from_user.id):
+        await state.clear()
+        return
+
+    raw_text = (message.text or message.caption or "").strip()
+    if raw_text == "-":
+        await set_ua_cards_text("")
+        await state.clear()
+        await message.answer("Реквизиты украинской карты очищены.", reply_markup=admin_home_kb())
+        return
+
+    cards_text = message_html_text(message)
+    if not cards_text:
+        await message.answer("Отправьте текст реквизитов или <code>-</code> для очистки.", reply_markup=cancel_flow_kb("admin_home"))
+        return
+
+    await set_ua_cards_text(cards_text)
+    await state.clear()
+    await message.answer(
+        "<b>Реквизиты украинской карты сохранены.</b>\n\n"
+        f"{cards_text}",
+        reply_markup=admin_home_kb(),
     )
 
 
@@ -2609,7 +2741,7 @@ async def user_topup_amount(message: Message, state: FSMContext):
             topup_rate_source=quote["rate_source"],
         )
         await state.set_state(UserTopUpStates.waiting_receipt)
-        await message.answer(manual_topup_requisites(method, quote), reply_markup=topup_receipt_kb())
+        await message.answer(await manual_topup_requisites(method, quote), reply_markup=topup_receipt_kb())
         return
 
     # Создаем инвойс через Crypto Pay
@@ -7006,8 +7138,10 @@ async def main_async() -> None:
     await on_startup()
     # Регистрация middleware
     dp.message.outer_middleware(SubscriptionMiddleware())
+    dp.message.outer_middleware(AgreementMiddleware())
     dp.callback_query.outer_middleware(CallbackFSMGuardMiddleware())
     dp.callback_query.outer_middleware(SubscriptionMiddleware())
+    dp.callback_query.outer_middleware(AgreementMiddleware())
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
 

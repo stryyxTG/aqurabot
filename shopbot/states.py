@@ -27,6 +27,10 @@ class AdminProxyStates(StatesGroup):
     waiting_proxy_input = State()
 
 
+class AdminCardsStates(StatesGroup):
+    waiting_cards_text = State()
+
+
 class AdminCatalogStates(StatesGroup):
     waiting_country_name = State()
     waiting_country_rename = State()
