@@ -6974,14 +6974,30 @@ async def bulk_sessions_done(query: CallbackQuery, state: FSMContext):
     if not bulk_sessions:
         await query.answer("Загрузите хотя бы одну сессию.", show_alert=True)
         return
-    
-    # Переходим на ввод пароля 2FA (общий для всех)
+
+    metadata_by_session = data.get("bulk_metadata_by_session", {}) or {}
+    sessions_without_json = [path for path in bulk_sessions if str(path) not in metadata_by_session]
+    if not sessions_without_json:
+        await state.update_data(twofa_password="")
+        await prompt_admin_add_country(
+            query.message,
+            state,
+            f"Загружено сессий: {len(bulk_sessions)}.\n\n"
+            "JSON найден для каждой сессии, общий 2FA не нужен.\n"
+            "Если в JSON нет пароля, для этого аккаунта считается, что 2FA нет.\n\n"
+            "Выберите страну каталога для этих сессий.",
+        )
+        return
+
     await state.set_state(AdminAddProductStates.waiting_bulk_password)
     await safe_edit(
         query.message,
         f"<b>Загружено сессий: {len(bulk_sessions)}</b>\n\n"
-        "🔐 Отправь пароль 2FA\n\n"
-        "Если 2FA не требуется - отправь <code>-</code>",
+        f"Без JSON: <b>{len(sessions_without_json)}</b>\n\n"
+        "🔐 Отправь общий пароль 2FA для сессий без JSON.\n\n"
+        "Для сессий с JSON будет использован их собственный пароль из JSON, "
+        "а если его там нет — 2FA считается отсутствующим.\n\n"
+        "Если у сессий без JSON 2FA не требуется - отправь <code>-</code>",
         cancel_flow_kb("admin_home"),
     )
 
@@ -7382,7 +7398,12 @@ async def finish_admin_add_products(message: Message, state: FSMContext, admin_i
 
         for idx, session_path in enumerate(bulk_sessions, 1):
             try:
-                session_metadata = bulk_metadata_by_session.get(str(session_path)) or load_existing_session_metadata(session_path)
+                json_metadata = bulk_metadata_by_session.get(str(session_path))
+                session_twofa = (
+                    str((json_metadata or {}).get("twofa_password") or "")
+                    if json_metadata is not None
+                    else str(data.get("twofa_password", ""))
+                )
                 alive_check = await session_manager.verify_session_file_alive(session_path)
                 if not alive_check.get("alive"):
                     error = alive_check.get("error", "Неизвестная ошибка")
@@ -7428,7 +7449,7 @@ async def finish_admin_add_products(message: Message, state: FSMContext, admin_i
                     telegram_id=telegram_id,
                     username=alive_check.get("username") or "",
                     first_name=alive_check.get("first_name") or "",
-                    twofa_password=str(session_metadata.get("twofa_password") or data.get("twofa_password", "")),
+                    twofa_password=session_twofa,
                     created_by=admin_id,
                 )
                 created_products.append(product_id)
