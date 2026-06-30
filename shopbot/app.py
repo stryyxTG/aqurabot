@@ -4179,7 +4179,15 @@ async def purchase_waiting_back(query: CallbackQuery):
 @dp.callback_query(F.data.startswith("request_code:"))
 async def request_code(query: CallbackQuery):
     await ensure_known_user(query)
-    product_id = int(query.data.split(":")[1])
+    parts = (query.data or "").split(":")
+    product_id = int(parts[1])
+    batch_id = parts[2] if len(parts) > 2 and parts[2] else None
+    page = 0
+    if len(parts) > 3:
+        try:
+            page = max(0, int(parts[3]))
+        except ValueError:
+            page = 0
     user_id = query.from_user.id
     
     product = await get_product(product_id)
@@ -4220,7 +4228,7 @@ async def request_code(query: CallbackQuery):
             f"Телефон: <code>{html.escape(product['phone'] or '—')}</code>\n"
             f"К0d: <code>{code}</code>{twofa_text}\n\n"
             "Используйте эти данные для входа.",
-            reply_markup=code_received_kb(product_id)
+            reply_markup=code_received_kb(product_id, batch_id=batch_id, page=page)
         )
         
     except Exception as e:
@@ -4245,7 +4253,7 @@ async def request_code(query: CallbackQuery):
             f"{twofa_text}\n"
             f"<b>Ошибка:</b> {html.escape(str(e))}\n\n"
             "Попробуйте запросить к0d немного позже. Если проблема повторится, напишите в поддержку.",
-            reply_markup=code_received_kb(product_id)
+            reply_markup=code_received_kb(product_id, batch_id=batch_id, page=page)
         )
 
 

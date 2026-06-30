@@ -106,7 +106,8 @@ def purchases_nav_kb(*, purchase_rows: list[list[InlineKeyboardButton]] | None =
 def purchase_history_detail_kb(page: int, product_id: int | None = None, batch_id: str | None = None) -> InlineKeyboardMarkup:
     rows = []
     if product_id is not None:
-        rows.append([InlineKeyboardButton(text="Получить к0d", callback_data=f"request_code:{product_id}", icon_custom_emoji_id=BTN_ICON_CHECK)])
+        code_callback = f"request_code:{product_id}:{batch_id}:{page}" if batch_id else f"request_code:{product_id}"
+        rows.append([InlineKeyboardButton(text="Получить к0d", callback_data=code_callback, icon_custom_emoji_id=BTN_ICON_CHECK)])
         rows.append([
             InlineKeyboardButton(text="session+json", callback_data=f"user_download_session:{product_id}"),
             InlineKeyboardButton(text="tdata", callback_data=f"user_download_tdata:{product_id}"),
@@ -649,17 +650,19 @@ def purchase_waiting_kb(product_id: int, back_callback: str) -> InlineKeyboardMa
     )
 
 
-def code_received_kb(product_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="Запросить к0d снова", callback_data=f"request_code:{product_id}")],
-            [
-                InlineKeyboardButton(text="session+json", callback_data=f"user_download_session:{product_id}"),
-                InlineKeyboardButton(text="tdata", callback_data=f"user_download_tdata:{product_id}"),
-            ],
-            [InlineKeyboardButton(text="Связаться с поддержкой", url=settings.support_url, icon_custom_emoji_id=BTN_ICON_SUPPORT)],
-        ]
-    )
+def code_received_kb(product_id: int, *, batch_id: str | None = None, page: int = 0) -> InlineKeyboardMarkup:
+    code_callback = f"request_code:{product_id}:{batch_id}:{page}" if batch_id else f"request_code:{product_id}"
+    rows = [
+        [InlineKeyboardButton(text="Запросить к0d снова", callback_data=code_callback)],
+        [
+            InlineKeyboardButton(text="session+json", callback_data=f"user_download_session:{product_id}"),
+            InlineKeyboardButton(text="tdata", callback_data=f"user_download_tdata:{product_id}"),
+        ],
+    ]
+    if batch_id:
+        rows.append([InlineKeyboardButton(text="Назад", callback_data=f"purchase_batch:{batch_id}:{page}", icon_custom_emoji_id=BTN_ICON_BACK)])
+    rows.append([InlineKeyboardButton(text="Связаться с поддержкой", url=settings.support_url, icon_custom_emoji_id=BTN_ICON_SUPPORT)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def stuck_products_kb(stuck_rows: list[list[InlineKeyboardButton]]) -> InlineKeyboardMarkup:
