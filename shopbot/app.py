@@ -6868,6 +6868,7 @@ async def admin_add_bulk_sessions(message: Message, state: FSMContext):
             with zipfile.ZipFile(io.BytesIO(content)) as archive:
                 members = [item for item in archive.infolist() if not item.is_dir()]
                 session_members = []
+                json_entries = []
                 for item in members:
                     inner_name = Path(item.filename).name
                     if not inner_name:
@@ -6877,13 +6878,14 @@ async def admin_add_bulk_sessions(message: Message, state: FSMContext):
                         if inner_lower.endswith(".json"):
                             metadata = parse_session_metadata_bytes(archive.read(item), inner_name)
                             metadata_lookup_put(json_lookup, inner_name, metadata)
+                            json_entries.append((inner_name, metadata))
                             json_count += 1
                         elif inner_lower.endswith(".session"):
                             session_members.append((item, inner_name))
                     except Exception as exc:
                         errors.append(f"{inner_name}: {exc}")
 
-                for item, inner_name in session_members:
+                for index, (item, inner_name) in enumerate(session_members):
                     try:
                         session_bytes = archive.read(item)
                         file_hash = session_file_sha256(session_bytes)
@@ -6891,6 +6893,10 @@ async def admin_add_bulk_sessions(message: Message, state: FSMContext):
                         with open(session_path, "wb") as f:
                             f.write(session_bytes)
                         metadata = find_metadata_for_session(session_path, json_lookup, inner_name)
+                        if metadata is None and len(json_entries) == 1:
+                            metadata = json_entries[0][1]
+                        elif metadata is None and len(json_entries) == len(session_members):
+                            metadata = json_entries[index][1]
                         write_uploaded_session_metadata(session_path, metadata, file_name=inner_name)
                         if metadata:
                             metadata_by_session[str(session_path)] = metadata
