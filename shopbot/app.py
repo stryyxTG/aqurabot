@@ -3,6 +3,8 @@ import asyncio
 import hashlib
 import html
 import inspect
+import io
+import json
 import logging
 import math
 import re
@@ -182,6 +184,13 @@ from .proxy_store import load_global_proxy, save_global_proxy
 from .proxy_utils import check_proxy_connectivity, format_proxy_summary, parse_proxy_input
 from .paths import product_session_base_path, SESSIONS_DIR, ROOT_DIR
 from .session_flow import LoginExpiredError, ShopSessionManager
+from .session_metadata import (
+    load_metadata_file,
+    metadata_match_keys,
+    normalize_session_metadata,
+    session_json_path,
+    write_session_metadata,
+)
 from .states import AdminAddProductStates, AdminBroadcastStates, AdminCardsStates, AdminCatalogStates, AdminCleanStates, AdminProxyStates, AdminTopUpStates, AdminEditProductStates, AdminEditProductGroupStates, AdminSearchUserStates, AdminSearchProductStates, AdminDropsStates, UserTopUpStates, UserCartStates, UserCatalogStates, ServiceOrderStates, AdminScanStates
 
 
@@ -1000,7 +1009,7 @@ def related_session_files(session_path: str | Path) -> set[Path]:
     base = str(path)
     if base.endswith(".session"):
         base = base[:-8]
-    return {Path(f"{base}{suffix}").resolve() for suffix in (".session", ".session-journal", ".session-wal", ".session-shm")}
+    return {Path(f"{base}{suffix}").resolve() for suffix in (".session", ".json", ".session-journal", ".session-wal", ".session-shm")}
 
 
 def discard_session_files(session_path: str | Path) -> None:
@@ -1029,7 +1038,7 @@ def clean_primary_session_path(session_path: str | Path) -> Path:
 def clean_related_session_files(session_path: str | Path) -> tuple[Path, ...]:
     primary = clean_primary_session_path(session_path)
     base = str(primary)[:-8]
-    return tuple(Path(f"{base}{suffix}").resolve() for suffix in (".session", ".session-journal", ".session-wal", ".session-shm"))
+    return tuple(Path(f"{base}{suffix}").resolve() for suffix in (".session", ".json", ".session-journal", ".session-wal", ".session-shm"))
 
 
 def is_clean_session_path_allowed(path: Path) -> bool:
@@ -1170,6 +1179,81 @@ def unique_uploaded_session_path(prefix: str, file_hash: str, file_name: str | N
     raise RuntimeError("Не удалось подобрать уникальное имя session-файла.")
 
 
+def parse_session_metadata_bytes(content: bytes, file_name: str | None = None) -> dict:
+    try:
+        raw = json.loads(content.decode("utf-8-sig"))
+    except UnicodeDecodeError:
+        raw = json.loads(content.decode("utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError("JSON должен быть объектом.")
+    metadata = normalize_session_metadata(
+        raw,
+        default_api_id=settings.api_id,
+        default_api_hash=settings.api_hash,
+    )
+    if file_name and not metadata.get("session_file"):
+        metadata["session_file"] = Path(file_name).name
+    return metadata
+
+
+def metadata_lookup_put(lookup: dict, file_name: str | None, metadata: dict) -> None:
+    for key in metadata_match_keys(file_name or metadata.get("session_file") or "", metadata):
+        lookup[key] = metadata
+
+
+def find_metadata_for_session(session_path: str | Path, lookup: dict, file_name: str | None = None) -> dict | None:
+    for key in metadata_match_keys(file_name or session_path):
+        metadata = lookup.get(key)
+        if metadata:
+            return metadata
+    return None
+
+
+def write_uploaded_session_metadata(session_path: str | Path, metadata: dict | None = None, *, file_name: str | None = None) -> Path:
+    source_name = Path(file_name).name if file_name and file_name.lower().endswith(".session") else Path(session_path).name
+    extra = {"session_file": source_name}
+    return write_session_metadata(
+        session_path,
+        metadata or {},
+        default_api_id=settings.api_id,
+        default_api_hash=settings.api_hash,
+        extra=extra,
+    )
+
+
+async def apply_bulk_metadata_to_existing_sessions(state: FSMContext, metadata: dict, file_name: str | None) -> int:
+    data = await state.get_data()
+    bulk_sessions = data.get("bulk_sessions", []) or []
+    bulk_session_names = data.get("bulk_session_names", {}) or {}
+    metadata_by_session = data.get("bulk_metadata_by_session", {}) or {}
+    lookup = {}
+    metadata_lookup_put(lookup, file_name, metadata)
+    matched = 0
+    for session_path in bulk_sessions:
+        if str(session_path) in metadata_by_session:
+            continue
+        original_name = bulk_session_names.get(str(session_path))
+        if find_metadata_for_session(session_path, lookup, original_name):
+            write_uploaded_session_metadata(session_path, metadata)
+            metadata_by_session[str(session_path)] = metadata
+            matched += 1
+    if matched:
+        await state.update_data(bulk_metadata_by_session=metadata_by_session)
+    return matched
+
+
+def load_existing_session_metadata(session_path: str | Path) -> dict:
+    path = session_json_path(session_path)
+    if not path.exists():
+        return {}
+    try:
+        metadata = load_metadata_file(path)
+        return metadata if isinstance(metadata, dict) else {}
+    except Exception:
+        logger.warning("Could not read session metadata: %s", path)
+        return {}
+
+
 def duplicate_product_text(product) -> str:
     return (
         f"уже есть товар #{product['product_id']} | "
@@ -1190,7 +1274,7 @@ async def scan_session_files() -> dict:
     for root in scan_roots:
         if not root.exists():
             continue
-        for pattern in ("*.session", "*.session-journal", "*.session-wal", "*.session-shm"):
+        for pattern in ("*.session", "*.json", "*.session-journal", "*.session-wal", "*.session-shm"):
             all_files.update(path.resolve() for path in root.rglob(pattern) if path.is_file())
 
     orphan_files = sorted(path for path in all_files if path not in protected_files)
@@ -6551,7 +6635,13 @@ async def session_count_bulk(query: CallbackQuery, state: FSMContext):
         return
     
     await state.set_state(AdminAddProductStates.waiting_bulk_sessions)
-    await state.update_data(bulk_sessions=[], bulk_session_hashes=[])
+    await state.update_data(
+        bulk_sessions=[],
+        bulk_session_hashes=[],
+        bulk_session_names={},
+        bulk_metadata_by_session={},
+        bulk_pending_metadata={},
+    )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Готово", callback_data="bulk_sessions_done")],
         [InlineKeyboardButton(text="Отменить", callback_data="cancel_flow:admin_home", icon_custom_emoji_id=BTN_ICON_CANCEL)],
@@ -6559,7 +6649,7 @@ async def session_count_bulk(query: CallbackQuery, state: FSMContext):
     await safe_edit(
         query.message,
         "<b>Загрузка нескольких .session файлов</b>\n\n"
-        "Отправляй файлы сессий по одному (или группой).\n\n"
+        "Отправляй .session, .json или .zip с парами session/json.\n\n"
         "Когда загрузите все файлы, нажмите <b>Готово</b>.\n\n"
         "Затем заполнишь данные один раз для всех сессий.",
         kb,
@@ -6569,50 +6659,161 @@ async def session_count_bulk(query: CallbackQuery, state: FSMContext):
 @dp.message(AdminAddProductStates.waiting_bulk_sessions)
 async def admin_add_bulk_sessions(message: Message, state: FSMContext):
     if not message.document:
-        await message.answer("Отправьте файл сессии (.session).")
+        await message.answer("Отправьте .session, .json или .zip.")
         return
     
     doc = message.document
-    if not (doc.file_name or "").lower().endswith(".session"):
-        await message.answer(f"Нужен файл .session. Получен: {doc.file_name}")
+    file_name = doc.file_name or "account.session"
+    lower_name = file_name.lower()
+    if not lower_name.endswith((".session", ".json", ".zip")):
+        await message.answer(f"Нужен .session, .json или .zip. Получен: {doc.file_name}")
         return
     
     try:
-        # Скачиваем файл
         file_info = await bot.get_file(doc.file_id)
         file_content = await bot.download(file_info)
-        session_bytes = file_content.read()
-        file_hash = session_file_sha256(session_bytes)
+        content = file_content.read()
 
         data = await state.get_data()
         bulk_hashes = data.get("bulk_session_hashes", [])
-        if file_hash in bulk_hashes:
+        bulk_sessions = data.get("bulk_sessions", [])
+        bulk_session_names = data.get("bulk_session_names", {}) or {}
+        metadata_by_session = data.get("bulk_metadata_by_session", {}) or {}
+        pending_metadata = data.get("bulk_pending_metadata", {}) or {}
+
+        if lower_name.endswith(".json"):
+            metadata = parse_session_metadata_bytes(content, file_name)
+            metadata_lookup_put(pending_metadata, file_name, metadata)
+            await state.update_data(bulk_pending_metadata=pending_metadata)
+            matched = await apply_bulk_metadata_to_existing_sessions(state, metadata, file_name)
             await message.answer(
-                "Этот .session уже есть в текущей пачке и повторно не добавлен.\n\n"
-                f"Файл: <code>{html.escape(doc.file_name or 'account.session')}</code>"
+                "JSON принят.\n"
+                f"Файл: <code>{html.escape(file_name)}</code>\n"
+                f"Совпало с уже загруженными сессиями: <b>{matched}</b>\n\n"
+                "Можно отправить .session/.zip или нажать <b>Готово</b>.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="Готово", callback_data="bulk_sessions_done")],
+                    [InlineKeyboardButton(text="Отменить", callback_data="cancel_flow:admin_home", icon_custom_emoji_id=BTN_ICON_CANCEL)],
+                ])
             )
             return
 
-        session_path = unique_uploaded_session_path("bulk", file_hash, doc.file_name)
+        if lower_name.endswith(".zip"):
+            imported = 0
+            duplicates = 0
+            json_count = 0
+            matched = 0
+            errors = []
+            json_lookup = dict(pending_metadata)
+            with zipfile.ZipFile(io.BytesIO(content)) as archive:
+                members = [item for item in archive.infolist() if not item.is_dir()]
+                session_members = []
+                for item in members:
+                    inner_name = Path(item.filename).name
+                    if not inner_name:
+                        continue
+                    inner_lower = inner_name.lower()
+                    try:
+                        if inner_lower.endswith(".json"):
+                            metadata = parse_session_metadata_bytes(archive.read(item), inner_name)
+                            metadata_lookup_put(json_lookup, inner_name, metadata)
+                            json_count += 1
+                        elif inner_lower.endswith(".session"):
+                            session_members.append((item, inner_name))
+                    except Exception as exc:
+                        errors.append(f"{inner_name}: {exc}")
+
+                for item, inner_name in session_members:
+                    try:
+                        session_bytes = archive.read(item)
+                        file_hash = session_file_sha256(session_bytes)
+                        if file_hash in bulk_hashes:
+                            duplicates += 1
+                            continue
+                        session_path = unique_uploaded_session_path("bulk", file_hash, inner_name)
+                        with open(session_path, "wb") as f:
+                            f.write(session_bytes)
+                        metadata = find_metadata_for_session(session_path, json_lookup, inner_name)
+                        write_uploaded_session_metadata(session_path, metadata, file_name=inner_name)
+                        if metadata:
+                            metadata_by_session[str(session_path)] = metadata
+                            matched += 1
+                        bulk_sessions.append(str(session_path))
+                        bulk_hashes.append(file_hash)
+                        bulk_session_names[str(session_path)] = inner_name
+                        imported += 1
+                    except Exception as exc:
+                        errors.append(f"{inner_name}: {exc}")
+
+            await state.update_data(
+                bulk_sessions=bulk_sessions,
+                bulk_session_hashes=bulk_hashes,
+                bulk_session_names=bulk_session_names,
+                bulk_metadata_by_session=metadata_by_session,
+                bulk_pending_metadata=json_lookup,
+            )
+            text = (
+                "<b>ZIP обработан</b>\n\n"
+                f"Добавлено сессий: <b>{imported}</b>\n"
+                f"JSON внутри: <b>{json_count}</b>\n"
+                f"JSON применено: <b>{matched}</b>\n"
+                f"Дублей пропущено: <b>{duplicates}</b>\n"
+                f"Всего в пачке: <b>{len(bulk_sessions)}</b>"
+            )
+            if errors:
+                text += "\n\nОшибки:\n" + "\n".join(f"  • {html.escape(error)}" for error in errors[:5])
+                if len(errors) > 5:
+                    text += f"\n  ... и ещё {len(errors) - 5}"
+            await message.answer(
+                text,
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="Готово", callback_data="bulk_sessions_done")],
+                    [InlineKeyboardButton(text="Отменить", callback_data="cancel_flow:admin_home", icon_custom_emoji_id=BTN_ICON_CANCEL)],
+                ])
+            )
+            return
+
+        session_bytes = content
+        file_hash = session_file_sha256(session_bytes)
+        if file_hash in bulk_hashes:
+            await message.answer(
+                "Этот .session уже есть в текущей пачке и повторно не добавлен.\n\n"
+                f"Файл: <code>{html.escape(file_name)}</code>"
+            )
+            return
+
+        session_path = unique_uploaded_session_path("bulk", file_hash, file_name)
         with open(session_path, "wb") as f:
             f.write(session_bytes)
+
+        metadata = find_metadata_for_session(session_path, pending_metadata, file_name)
+        write_uploaded_session_metadata(session_path, metadata, file_name=file_name)
         
-        # Добавляем в список
-        bulk_sessions = data.get("bulk_sessions", [])
         bulk_sessions.append(str(session_path))
         bulk_hashes.append(file_hash)
-        await state.update_data(bulk_sessions=bulk_sessions, bulk_session_hashes=bulk_hashes)
+        bulk_session_names[str(session_path)] = file_name
+        if metadata:
+            metadata_by_session[str(session_path)] = metadata
+        await state.update_data(
+            bulk_sessions=bulk_sessions,
+            bulk_session_hashes=bulk_hashes,
+            bulk_session_names=bulk_session_names,
+            bulk_metadata_by_session=metadata_by_session,
+        )
         
         await message.answer(
             f"Загружено: <b>{len(bulk_sessions)}</b>\n"
             f"Последний файл: <code>{html.escape(session_path.name)}</code>\n"
             f"SHA-256: <code>{file_hash[:12]}</code>\n\n"
+            f"JSON: {'применён' if metadata else 'сгенерирован desktop-профиль'}\n\n"
             "Отправьте следующие файлы или нажмите <b>Готово</b>.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="Готово", callback_data="bulk_sessions_done")],
                 [InlineKeyboardButton(text="Отменить", callback_data="cancel_flow:admin_home", icon_custom_emoji_id=BTN_ICON_CANCEL)],
             ])
         )
+    except zipfile.BadZipFile:
+        await message.answer("ZIP не читается. Проверьте архив и отправьте ещё раз.")
     except Exception as exc:
         logger.error(f"Ошибка при загрузке bulk сессии: {exc}")
         await message.answer(f"Ошибка: {html.escape(str(exc))}")
@@ -6665,35 +6866,66 @@ async def admin_add_session_file(message: Message, state: FSMContext):
         return
     
     doc = message.document
-    if not (doc.file_name or "").lower().endswith(".session"):
-        await message.answer("Нужен файл с расширением .session.")
+    file_name = doc.file_name or "account.session"
+    lower_name = file_name.lower()
+    if not lower_name.endswith((".session", ".json")):
+        await message.answer("Нужен файл с расширением .session или .json.")
         return
     
     try:
-        # Скачиваем файл
         file_info = await bot.get_file(doc.file_id)
         file_content = await bot.download(file_info)
-        session_bytes = file_content.read()
+        content = file_content.read()
+
+        if lower_name.endswith(".json"):
+            metadata = parse_session_metadata_bytes(content, file_name)
+            data = await state.get_data()
+            session_path = data.get("session_path")
+            if session_path:
+                write_uploaded_session_metadata(session_path, metadata, file_name=file_name)
+                await state.update_data(single_session_metadata=metadata)
+                await message.answer(
+                    "JSON прикреплён к загруженной сессии.\n\n"
+                    "🔐 Отправь пароль 2FA\n\n"
+                    "Если 2FA не требуется - отправь <code>-</code>",
+                    reply_markup=cancel_flow_kb("admin_home")
+                )
+                await state.set_state(AdminAddProductStates.waiting_password)
+                return
+            await state.update_data(single_session_metadata=metadata)
+            await message.answer(
+                "JSON принят.\n\n"
+                "Теперь отправьте .session для этого аккаунта.",
+                reply_markup=cancel_flow_kb("admin_home")
+            )
+            return
+
+        session_bytes = content
         file_hash = session_file_sha256(session_bytes)
-        session_path = unique_uploaded_session_path("single", file_hash, doc.file_name)
+        session_path = unique_uploaded_session_path("single", file_hash, file_name)
 
         with open(session_path, "wb") as f:
             f.write(session_bytes)
+
+        data = await state.get_data()
+        metadata = data.get("single_session_metadata")
+        write_uploaded_session_metadata(session_path, metadata, file_name=file_name)
         
-        # Сохраняем путь и переходим на запрос 2FA
         await state.update_data(
             session_path=str(session_path),
             session_sha256=file_hash,
-            phone="",
-            telegram_id=None,
-            username="",
-            first_name="",
-            twofa_password=""
+            phone=str((metadata or {}).get("phone") or ""),
+            telegram_id=(metadata or {}).get("user_id"),
+            username=str((metadata or {}).get("username") or ""),
+            first_name=str((metadata or {}).get("first_name") or ""),
+            twofa_password="",
+            single_session_metadata=metadata or {},
         )
         await state.set_state(AdminAddProductStates.waiting_password)
         await message.answer(
             f"Файл загружен: <code>{html.escape(session_path.name)}</code>\n"
             f"SHA-256: <code>{file_hash[:12]}</code>\n\n"
+            f"JSON: {'применён' if metadata else 'сгенерирован desktop-профиль'}\n\n"
             "🔐 Отправь пароль 2FA\n\n"
             "Если 2FA не требуется - отправь <code>-</code>",
             reply_markup=cancel_flow_kb("admin_home")
@@ -6816,17 +7048,40 @@ async def admin_add_code_message(message: Message, state: FSMContext):
 
 @dp.message(AdminAddProductStates.waiting_password)
 async def admin_add_password(message: Message, state: FSMContext):
+    data = await state.get_data()
+    session_path = data.get("session_path")
+
+    if session_path and message.document:
+        doc = message.document
+        file_name = doc.file_name or "account.json"
+        if not file_name.lower().endswith(".json"):
+            await message.answer("На этом шаге можно прикрепить только .json или отправить пароль/-.")
+            return
+        try:
+            file_info = await bot.get_file(doc.file_id)
+            file_content = await bot.download(file_info)
+            metadata = parse_session_metadata_bytes(file_content.read(), file_name)
+            write_uploaded_session_metadata(session_path, metadata, file_name=file_name)
+            await state.update_data(single_session_metadata=metadata)
+        except Exception as exc:
+            await message.answer(f"Не удалось прочитать JSON: {html.escape(str(exc))}")
+            return
+        await message.answer(
+            "JSON прикреплён.\n\n"
+            "Теперь отправь пароль 2FA или <code>-</code>, если 2FA не нужен.",
+            reply_markup=cancel_flow_kb("admin_home")
+        )
+        return
+
     password = (message.text or "").strip()
     if not password:
         await message.answer("Отправьте пароль или <code>-</code>, если 2FA не нужен.")
         return
     
-    data = await state.get_data()
-    session_path = data.get("session_path")
-    
     if session_path:
-        # Это загрузка .session файла - просто сохраняем пароль
-        twofa_password = "" if password == "-" else password
+        metadata = data.get("single_session_metadata") or load_existing_session_metadata(session_path)
+        metadata_password = str((metadata or {}).get("twofa_password") or "")
+        twofa_password = metadata_password if password == "-" and metadata_password else ("" if password == "-" else password)
         await state.update_data(twofa_password=twofa_password)
         await prompt_admin_add_country(message, state, "Пароль сохранен.\n\nВыберите страну каталога для аккаунта.")
     else:
@@ -6981,9 +7236,11 @@ async def finish_admin_add_products(message: Message, state: FSMContext, admin_i
         errors = []
         seen_telegram_ids: dict[int, int] = {}
         seen_phones: dict[str, int] = {}
+        bulk_metadata_by_session = data.get("bulk_metadata_by_session", {}) or {}
 
         for idx, session_path in enumerate(bulk_sessions, 1):
             try:
+                session_metadata = bulk_metadata_by_session.get(str(session_path)) or load_existing_session_metadata(session_path)
                 alive_check = await session_manager.verify_session_file_alive(session_path)
                 if not alive_check.get("alive"):
                     error = alive_check.get("error", "Неизвестная ошибка")
@@ -7029,7 +7286,7 @@ async def finish_admin_add_products(message: Message, state: FSMContext, admin_i
                     telegram_id=telegram_id,
                     username=alive_check.get("username") or "",
                     first_name=alive_check.get("first_name") or "",
-                    twofa_password=data.get("twofa_password", ""),
+                    twofa_password=str(session_metadata.get("twofa_password") or data.get("twofa_password", "")),
                     created_by=admin_id,
                 )
                 created_products.append(product_id)

@@ -27,6 +27,7 @@ from .db import get_product_session_path, update_code_fetched_at, get_product, u
 from .paths import product_session_base_path, temp_session_base_path
 from .proxy_store import load_global_proxy
 from .proxy_utils import build_telegram_client, format_proxy_summary
+from .session_metadata import copy_session_metadata, load_session_metadata, write_session_metadata
 
 logger = logging.getLogger(__name__)
 LOGIN_STEP_TIMEOUT = 25
@@ -41,6 +42,7 @@ class ActiveLogin:
     phone_code_hash: str
     proxy_settings: dict | None = None
     password_used: str = ""
+    metadata: dict | None = None
 
 
 class LoginExpiredError(RuntimeError):
@@ -60,7 +62,7 @@ class ShopSessionManager:
             await flow.client.disconnect()
         except Exception:
             pass
-        for suffix in (".session", ".session-journal", ".session-wal", ".session-shm"):
+        for suffix in (".session", ".json", ".session-journal", ".session-wal", ".session-shm"):
             path = Path(f"{flow.temp_session_base}{suffix}")
             if path.exists():
                 try:
@@ -69,7 +71,7 @@ class ShopSessionManager:
                     pass
 
     def _cleanup_temp_files(self, temp_session_base: Path) -> None:
-        for suffix in (".session", ".session-journal", ".session-wal", ".session-shm"):
+        for suffix in (".session", ".json", ".session-journal", ".session-wal", ".session-shm"):
             path = Path(f"{temp_session_base}{suffix}")
             if path.exists():
                 try:
@@ -77,17 +79,27 @@ class ShopSessionManager:
                 except Exception:
                     logger.warning("Could not remove temp session file: %s", path)
 
-    def _build_client(self, session_base: Path, proxy_settings: dict | None):
+    def _load_client_metadata(self, session_base: Path, fallback: dict | None = None) -> dict:
+        if fallback:
+            return fallback
+        return load_session_metadata(
+            session_base,
+            default_api_id=self.settings.api_id,
+            default_api_hash=self.settings.api_hash,
+        )
+
+    def _build_client(self, session_base: Path, proxy_settings: dict | None, metadata: dict | None = None):
+        profile = self._load_client_metadata(session_base, metadata)
         return build_telegram_client(
             session_base,
-            self.settings.api_id,
-            self.settings.api_hash,
+            int(profile.get("api_id") or self.settings.api_id),
+            str(profile.get("api_hash") or self.settings.api_hash),
             proxy_settings,
-            device_model=self.settings.device_model,
-            system_version=self.settings.system_version,
-            app_version=self.settings.app_version,
-            lang_code=self.settings.lang_code,
-            system_lang_code=self.settings.system_lang_code,
+            device_model=str(profile.get("device_model") or self.settings.device_model),
+            system_version=str(profile.get("system_version") or self.settings.system_version),
+            app_version=str(profile.get("app_version") or self.settings.app_version),
+            lang_code=str(profile.get("lang_code") or "en"),
+            system_lang_code=str(profile.get("system_lang_code") or "en-US"),
         )
 
     async def _get_product_session_path(self, product_id: int) -> str | None:
@@ -124,7 +136,7 @@ class ShopSessionManager:
         base_text = str(session_file)
         if base_text.endswith(".session"):
             base_text = base_text[:-8]
-        for suffix in (".session", ".session-journal", ".session-wal", ".session-shm"):
+        for suffix in (".session", ".json", ".session-journal", ".session-wal", ".session-shm"):
             candidates.add(Path(f"{base_text}{suffix}"))
         for path in candidates:
             if path.exists():
@@ -242,10 +254,19 @@ class ShopSessionManager:
         login_id = str(int(time.time() * 1000))
         temp_base = temp_session_base_path(admin_id, login_id)
         proxy_settings = load_global_proxy()
+        login_metadata = write_session_metadata(
+            temp_base,
+            {},
+            default_api_id=self.settings.api_id,
+            default_api_hash=self.settings.api_hash,
+            extra={"phone": phone},
+        )
+        _ = login_metadata
 
         client = None
         try:
-            client = self._build_client(temp_base, proxy_settings)
+            metadata = self._load_client_metadata(temp_base)
+            client = self._build_client(temp_base, proxy_settings, metadata)
             await self._connect_with_backoff(client, max_retries=2)
             sent = await self._run_once(client.send_code_request(phone))
         except (RuntimeError, ValueError, OSError, ConnectionError, EOFError, asyncio.IncompleteReadError, asyncio.TimeoutError) as e:
@@ -275,6 +296,7 @@ class ShopSessionManager:
             client=client,
             phone_code_hash=sent.phone_code_hash,
             proxy_settings=proxy_settings,
+            metadata=self._load_client_metadata(temp_base),
         )
 
     def get(self, admin_id: int) -> ActiveLogin:
@@ -330,7 +352,8 @@ class ShopSessionManager:
         if final_session.exists():
             final_session.unlink()
         shutil.copy2(source_session, final_session)
-        for suffix in (".session", ".session-journal", ".session-wal", ".session-shm"):
+        copy_session_metadata(flow.temp_session_base, final_session)
+        for suffix in (".session", ".json", ".session-journal", ".session-wal", ".session-shm"):
             path = Path(f"{flow.temp_session_base}{suffix}")
             if path.exists():
                 try:
@@ -563,7 +586,8 @@ class ShopSessionManager:
             return {"alive": False, "error": "Сессия не найдена"}
 
         proxy_settings = load_global_proxy()
-        client = self._build_client(session_file, proxy_settings)
+        metadata = self._load_client_metadata(session_file)
+        client = self._build_client(session_file, proxy_settings, metadata)
         try:
             await self._connect_with_backoff(client, max_retries=1)
             if not await client.is_user_authorized():
