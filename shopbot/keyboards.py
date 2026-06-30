@@ -639,15 +639,17 @@ def code_keypad_kb(can_submit: bool = False) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def purchase_waiting_kb(product_id: int, back_callback: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="Получить к0d", callback_data=f"request_code:{product_id}")],
-            [
-                InlineKeyboardButton(text="session+json", callback_data=f"user_download_session:{product_id}"),
-                InlineKeyboardButton(text="tdata", callback_data=f"user_download_tdata:{product_id}"),
-            ],
-        ]
-    )
+    rows = [
+        [InlineKeyboardButton(text="Получить к0d", callback_data=f"request_code:{product_id}")],
+        [
+            InlineKeyboardButton(text="session+json", callback_data=f"user_download_session:{product_id}"),
+            InlineKeyboardButton(text="tdata", callback_data=f"user_download_tdata:{product_id}"),
+        ],
+    ]
+    if back_callback:
+        rows.append([InlineKeyboardButton(text="Назад", callback_data=back_callback, icon_custom_emoji_id=BTN_ICON_BACK)])
+    rows.append([InlineKeyboardButton(text="В меню", callback_data="menu_home", icon_custom_emoji_id=BTN_ICON_HOME)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def code_received_kb(product_id: int, *, batch_id: str | None = None, page: int = 0) -> InlineKeyboardMarkup:
@@ -661,6 +663,8 @@ def code_received_kb(product_id: int, *, batch_id: str | None = None, page: int 
     ]
     if batch_id:
         rows.append([InlineKeyboardButton(text="Назад", callback_data=f"purchase_batch:{batch_id}:{page}", icon_custom_emoji_id=BTN_ICON_BACK)])
+    else:
+        rows.append([InlineKeyboardButton(text="В меню", callback_data="menu_home", icon_custom_emoji_id=BTN_ICON_HOME)])
     rows.append([InlineKeyboardButton(text="Связаться с поддержкой", url=settings.support_url, icon_custom_emoji_id=BTN_ICON_SUPPORT)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

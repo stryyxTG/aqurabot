@@ -4167,7 +4167,11 @@ def purchase_delivery_text(product) -> str:
 @dp.callback_query(F.data.startswith("purchase_waiting:"))
 async def purchase_waiting_back(query: CallbackQuery):
     await ensure_known_user(query)
-    product_id = int(query.data.split(":", 1)[1])
+    try:
+        product_id = int(query.data.split(":", 1)[1])
+    except (IndexError, ValueError):
+        await query.answer("Товар не найден.", show_alert=True)
+        return
     product = await get_product(product_id)
     if not product or product["sold_to"] != query.from_user.id:
         await query.answer("Товар не найден.", show_alert=True)
@@ -4180,7 +4184,11 @@ async def purchase_waiting_back(query: CallbackQuery):
 async def request_code(query: CallbackQuery):
     await ensure_known_user(query)
     parts = (query.data or "").split(":")
-    product_id = int(parts[1])
+    try:
+        product_id = int(parts[1])
+    except (IndexError, ValueError):
+        await query.answer("Товар не найден.", show_alert=True)
+        return
     batch_id = parts[2] if len(parts) > 2 and parts[2] else None
     page = 0
     if len(parts) > 3:
