@@ -1748,8 +1748,12 @@ def build_code_prompt_text(code_input: str) -> str:
     return (
         "📩 <b>Вв0д к0Dа</b>\n\n"
         f"Введено: <b>{display or '—'}</b>\n\n"
-        "Введите к0D кнопками ниже."
+        "Введите к0D кнопками ниже или отправьте его одним сообщением."
     )
+
+
+def normalize_login_code(value: str) -> str:
+    return re.sub(r"\D", "", value or "")
 
 
 def build_proxy_text() -> str:
@@ -6719,6 +6723,41 @@ async def admin_add_phone(message: Message, state: FSMContext):
     await progress.edit_text(build_code_prompt_text(""), reply_markup=code_keypad_kb(False))
 
 
+async def submit_admin_login_code(target: Message | CallbackQuery, state: FSMContext, code: str) -> None:
+    if len(code) < 5:
+        if isinstance(target, CallbackQuery):
+            await target.answer("К0d слишком короткий.", show_alert=True)
+        else:
+            await target.answer("К0d слишком короткий. Отправьте 5-8 цифр.")
+        return
+
+    await state.update_data(code_input=code)
+    status_message = target.message if isinstance(target, CallbackQuery) else target
+    await safe_edit(status_message, "Проверяю к0d входа...", cancel_flow_kb("admin_home"))
+    try:
+        result = await session_manager.submit_code(target.from_user.id, code)
+    except LoginExpiredError as exc:
+        await state.clear()
+        await safe_edit(status_message, f"{html.escape(str(exc))}", admin_home_kb())
+        return
+    except Exception as exc:
+        await state.clear()
+        await session_manager.cleanup(target.from_user.id)
+        await safe_edit(status_message, f"Ошибка логина: {html.escape(str(exc))}", admin_home_kb())
+        return
+    if not result["ok"]:
+        await state.update_data(code_input="")
+        await safe_edit(status_message, "Неверный к0d. Попробуйте еще раз.\n\n" + build_code_prompt_text(""), code_keypad_kb(False))
+        return
+    if result["need_password"]:
+        await state.set_state(AdminAddProductStates.waiting_password)
+        await safe_edit(status_message, "🔐 Нужен пароль 2FA. Отправьте его одним сообщением.", cancel_flow_kb("admin_home"))
+        return
+    me = result["me"]
+    await state.update_data(telegram_id=int(me.id), username=me.username or "", first_name=me.first_name or "User", phone=getattr(me, "phone", "") or "", twofa_password="")
+    await prompt_admin_add_country(status_message, state, "Сеccuя подключена.\n\nВыберите страну каталога для аккаунта.")
+
+
 @dp.callback_query(F.data.startswith("code_digit:"))
 async def code_digit(query: CallbackQuery, state: FSMContext):
     if await state.get_state() != AdminAddProductStates.waiting_code.state:
@@ -6762,33 +6801,17 @@ async def code_submit(query: CallbackQuery, state: FSMContext):
         return
     data = await state.get_data()
     code = str(data.get("code_input", ""))
-    if len(code) < 5:
-        await query.answer("К0d слишком короткий.", show_alert=True)
-        return
     await query.answer()
-    await safe_edit(query.message, "Проверяю к0d входа...", cancel_flow_kb("admin_home"))
-    try:
-        result = await session_manager.submit_code(query.from_user.id, code)
-    except LoginExpiredError as exc:
-        await state.clear()
-        await safe_edit(query.message, f"{html.escape(str(exc))}", admin_home_kb())
+    await submit_admin_login_code(query, state, code)
+
+
+@dp.message(AdminAddProductStates.waiting_code)
+async def admin_add_code_message(message: Message, state: FSMContext):
+    code = normalize_login_code(message.text or "")
+    if not 5 <= len(code) <= 8:
+        await message.answer("Отправьте к0d одним сообщением: 5-8 цифр.", reply_markup=code_keypad_kb(False))
         return
-    except Exception as exc:
-        await state.clear()
-        await session_manager.cleanup(query.from_user.id)
-        await safe_edit(query.message, f"Ошибка логина: {html.escape(str(exc))}", admin_home_kb())
-        return
-    if not result["ok"]:
-        await state.update_data(code_input="")
-        await safe_edit(query.message, "Неверный к0d. Попробуйте еще раз.\n\n" + build_code_prompt_text(""), code_keypad_kb(False))
-        return
-    if result["need_password"]:
-        await state.set_state(AdminAddProductStates.waiting_password)
-        await safe_edit(query.message, "🔐 Нужен пароль 2FA. Отправьте его одним сообщением.", cancel_flow_kb("admin_home"))
-        return
-    me = result["me"]
-    await state.update_data(telegram_id=int(me.id), username=me.username or "", first_name=me.first_name or "User", phone=getattr(me, "phone", "") or "", twofa_password="")
-    await prompt_admin_add_country(query.message, state, "Сеccuя подключена.\n\nВыберите страну каталога для аккаунта.")
+    await submit_admin_login_code(message, state, code)
 
 
 @dp.message(AdminAddProductStates.waiting_password)
