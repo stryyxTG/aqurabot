@@ -61,7 +61,6 @@ from .db import (
     get_stuck_products,
     get_topup_request,
     get_user,
-    get_waiting_products,
     init_db,
     is_topup_reviewer,
     list_catalog_countries,
@@ -77,7 +76,6 @@ from .db import (
     list_sold_products_for_manual_cleanup,
     list_user_batch_purchases,
     list_user_purchase_groups,
-    list_sold_products_with_sessions,
     list_topup_reviewers,
     list_user_purchases,
     mark_product_session_cleanup_disabled,
@@ -165,7 +163,6 @@ from .keyboards import (
     topup_other_kb,
     topup_receipt_kb,
     topup_review_kb,
-    verification_kb,
     admin_user_manage_kb,
     support_kb,
     service_detail_kb,
@@ -174,13 +171,12 @@ from .keyboards import (
     service_recipient_cancel_kb,
     stars_packages_kb,
     subscription_kb,
-    verification_confirm_kb,
 )
 from .proxy_store import load_global_proxy, save_global_proxy
 from .proxy_utils import check_proxy_connectivity, format_proxy_summary, parse_proxy_input
 from .paths import product_session_base_path, SESSIONS_DIR, ROOT_DIR
 from .session_flow import LoginExpiredError, ShopSessionManager
-from .states import AdminAddProductStates, AdminBroadcastStates, AdminCatalogStates, AdminCleanStates, AdminProxyStates, AdminTopUpStates, VerificationStates, AdminEditProductStates, AdminEditProductGroupStates, AdminSearchUserStates, AdminSearchProductStates, AdminDropsStates, UserTopUpStates, UserCartStates, ServiceOrderStates, AdminScanStates
+from .states import AdminAddProductStates, AdminBroadcastStates, AdminCatalogStates, AdminCleanStates, AdminProxyStates, AdminTopUpStates, AdminEditProductStates, AdminEditProductGroupStates, AdminSearchUserStates, AdminSearchProductStates, AdminDropsStates, UserTopUpStates, UserCartStates, ServiceOrderStates, AdminScanStates
 
 
 logging.basicConfig(
@@ -3958,86 +3954,6 @@ async def batch_download(query: CallbackQuery):
             )
 
 
-@dp.callback_query(F.data.startswith("check_verification:"))
-async def check_verification(query: CallbackQuery, state: FSMContext):
-    """Показывает подтверждение входа перед завершением покупки."""
-    await ensure_known_user(query)
-    product_id = int(query.data.split(":")[1])
-    user_id = query.from_user.id
-    
-    product = await get_product(product_id)
-    if not product or product["sold_to"] != user_id:
-        await query.answer("Товар не найден.", show_alert=True)
-        return
-    
-    if product["status"] == "sold":
-        await query.message.edit_text(
-            "✅ Аkkаунт уже подтвержден.",
-            reply_markup=back_to_main_kb(is_admin(user_id))
-        )
-        return
-    
-    if product["status"] != "waiting_code":
-        await query.answer("Статус не позволяет подтвердить вход.", show_alert=True)
-        return
-
-    await query.answer()
-    text = (
-        f"{ICON_SUCCESS} <b>Подтвердите вход</b>\n\n"
-        f"{ICON_PURCHASE_TAG} <b>Товар:</b> {render_rich_text(product['title'])}\n"
-        f"<b>Телефон:</b> <code>{html.escape(product['phone'] or '—')}</code>\n\n"
-        "Нажимайте подтверждение только если вы уже вошли в аккаунт. После этого покупка будет завершена."
-    )
-    await safe_edit(query.message, text, verification_confirm_kb(product_id))
-
-
-@dp.callback_query(F.data.startswith("check_verification_confirm:"))
-async def check_verification_confirm(query: CallbackQuery, state: FSMContext):
-    """Пользователь повторно подтвердил вход - отмечаем товар как sold."""
-    await ensure_known_user(query)
-    product_id = int(query.data.split(":")[1])
-    user_id = query.from_user.id
-
-    product = await get_product(product_id)
-    if not product or product["sold_to"] != user_id:
-        await query.answer("Товар не найден.", show_alert=True)
-        return
-
-    if product["status"] == "sold":
-        await safe_edit(
-            query.message,
-            f"{ICON_SUCCESS} <b>Аккаунт уже подтвержден.</b>",
-            back_to_main_kb(is_admin(user_id)),
-        )
-        return
-
-    if product["status"] != "waiting_code":
-        await query.answer("Статус не позволяет подтвердить вход.", show_alert=True)
-        return
-    
-    # Пользователь нажал "Я вошел" - сразу отмечаем как sold
-    await update_product_status(product_id, "sold")
-    await state.clear()
-    
-    # Логируем успешную покупку
-    await log_purchase("purchase_successful",
-        product_title=product["title"],
-        phone=product["phone"],
-        account_name=product["first_name"] or product["username"],
-        user_id=user_id,
-        price=float(product["price"])
-    )
-    
-    logger.info(f"[product={product_id}] ✅ Товар отмечен как SOLD по подтверждению пользователя")
-    
-    await query.answer("Готово.")
-    await query.message.edit_text(
-        f"{ICON_SUCCESS} <b>Аkkаунт передан</b>\n\n"
-        f"Спасибо за покупку. {ICON_HEART}",
-        reply_markup=purchase_success_kb(is_admin(user_id))
-    )
-
-
 @dp.callback_query(F.data.startswith("buy_group:"))
 async def product_group_buy(query: CallbackQuery):
     await ensure_known_user(query)
@@ -6164,6 +6080,32 @@ async def admin_remove(query: CallbackQuery):
     if not is_admin(query.from_user.id):
         return
     product_id = int(query.data.split("_")[-1])
+    product = await get_product(product_id)
+    if not product:
+        await query.answer("Товар не найден.", show_alert=True)
+        await safe_edit(query.message, "<b>Админка</b>", admin_home_kb())
+        return
+
+    if product["status"] == "sold":
+        session_path = (product["session_path"] or "").strip()
+        if session_path:
+            await session_manager.logout_and_delete_product_session(product_id)
+        delete_result = await delete_sold_product_with_history(
+            product_id,
+            session_path,
+            allow_session_cleared=True,
+        )
+        if delete_result == "deleted":
+            await query.answer("Проданный товар удален.")
+            await log_purchase(
+                "admin_action",
+                action=f"Проданный товар #{product_id} удален из карточки с очисткой сессии",
+                admin_id=query.from_user.id,
+            )
+        else:
+            await query.answer(f"Не удалось удалить: {delete_result}", show_alert=True)
+        await safe_edit(query.message, "<b>Админка</b>", admin_home_kb())
+        return
     
     # Пытаемся обычное удаление, если не сработает - принудительное
     if await remove_product(product_id):
@@ -6981,156 +6923,6 @@ async def cancel_flow(query: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "noop")
 async def noop_callback(query: CallbackQuery):
     await query.answer()
-
-async def check_account_login_auto():
-    """Фоновая задача: проверяет вошли ли в аккаунты в статусе waiting_code"""
-    while True:
-        try:
-            await asyncio.sleep(60)  # Проверяем раз в минуту для снижения нагрузки
-            
-            # Получаем товары в статусе waiting_code (ждут кода)
-            async with get_db_conn() as db:
-                async with db.execute(
-                    "SELECT * FROM products WHERE status = 'waiting_code' AND sold_to IS NOT NULL"
-                ) as cursor:
-                    products = await cursor.fetchall()
-            
-            for product in products:
-                product_id = product["product_id"]
-                buyer_id = product["sold_to"]
-                
-                try:
-                    result = await session_manager.detect_buyer_login(product_id, product["sold_at"])
-                    
-                    if result.get("confirmed"):
-                        await update_product_status(product_id, "sold")
-                        
-                        # Логируем успешную покупку
-                        await log_purchase("purchase_successful",
-                            product_title=product["title"],
-                            phone=product["phone"],
-                            account_name=product["first_name"] or product["username"],
-                            user_id=buyer_id,
-                            price=float(product["price"])
-                        )
-                        
-                        # Уведомляем покупателя с поздравлением
-                        try:
-                            await bot.send_message(
-                                buyer_id,
-                                f"{ICON_PARTY} <b>Поздравляем с успешной покупкой!</b>\n\n"
-                                f"{ICON_AUTO_SPARKLE} Мы обнаружили ваш вход в аkkаунт.\n"
-                                f"{ICON_PURCHASE_TAG} <b>Товар:</b> {render_rich_text(product['title'])}\n"
-                                f"{ICON_COIN} <b>Сумма:</b> {fmt_money(float(product['price']))}\n\n"
-                                f"Аkкаунт полностью ваш. Спасибо за покупку!",
-                                parse_mode=ParseMode.HTML,
-                                reply_markup=purchase_success_kb(is_admin(buyer_id))
-                            )
-                        except Exception as e:
-                            logger.warning(f"Не удалось отправить уведомление покупателю {buyer_id}: {e}")
-                        
-                        # Логируем в канал
-                        logger.info(f"Автоматически обнаружен вход в товар #{product_id} (покупатель: {buyer_id})")
-                        
-                except Exception as e:
-                    logger.debug(f"Ошибка при проверке товара {product_id}: {e}")
-                    
-        except Exception as e:
-            logger.error(f"Ошибка в фоновой задаче check_account_login_auto: {e}")
-            await asyncio.sleep(60)
-
-
-async def check_expired_products():
-    """Фоновая задача: проверяет товары, которые ждут код больше 15 минут"""
-    while True:
-        try:
-            await asyncio.sleep(60)  # Проверяем каждую минуту
-            
-            products = await get_waiting_products()
-            now = datetime.now(timezone.utc)
-            
-            for product in products:
-                sold_at_str = product["sold_at"]
-                if not sold_at_str:
-                    continue
-                
-                # Парсим время продажи
-                try:
-                    sold_at = datetime.fromisoformat(sold_at_str)
-                    if sold_at.tzinfo is None:
-                        sold_at = sold_at.replace(tzinfo=timezone.utc)
-                    sold_at = sold_at.astimezone(timezone.utc)
-                    elapsed = (now - sold_at).total_seconds()
-                    
-                    if elapsed > 900:  # 15 минут = 900 секунд
-                        product_id = product["product_id"]
-                        buyer_id = product["sold_to"]
-                        full_p = await get_product(product_id)
-                        buyer_user = await get_user(buyer_id)
-                        
-                        if await return_product_to_catalog(product_id):
-                            logger.info(f"Товар {product_id} возвращён в каталог (истекло время входа)")
-                            await log_purchase("purchase_timeout", 
-                                product_id=product_id, phone=full_p['phone'], 
-                                first_name=full_p['first_name'], username=full_p['username'],
-                                telegram_id=full_p['telegram_id'], buyer_id=buyer_id,
-                                buyer_user=buyer_user['username'] if buyer_user else "Unknown")
-                            
-                            # Уведомляем покупателя
-                            try:
-                                await bot.send_message(
-                                    buyer_id,
-                                    f"{ICON_BLOCK} <b>Сделка отменена</b>\n\n"
-                                    f"Вы не выполнили вход в аkkаунт в течение 15 минут.\n"
-                                    f"Товар возвращён в каталог, деньги вернулись на {ICON_COIN} баланс. Если считаете этой ошибкой, обратитесь к {html.escape(settings.support_username)}\n\n"
-                                    f"Вы можете купить его снова.",
-                                    parse_mode=ParseMode.HTML
-                                )
-                            except Exception:
-                                logger.exception("Could not notify buyer %s about purchase timeout for product #%s", buyer_id, product_id)
-                except Exception as e:
-                    logger.error(f"Ошибка при проверке товара {product['product_id']}: {e}")
-                    
-        except Exception as e:
-            logger.error(f"Ошибка в фоновой задаче check_expired_products: {e}")
-            await asyncio.sleep(60)
-
-
-async def cleanup_sold_product_sessions():
-    """Через 24 часа после продажи закрывает и удаляет серверные .session файлы."""
-    while True:
-        try:
-            await asyncio.sleep(3600)
-            products = await list_sold_products_with_sessions()
-            now = datetime.now(timezone.utc)
-            for product in products:
-                sold_at_str = product["sold_at"]
-                if not sold_at_str:
-                    continue
-                try:
-                    sold_at = datetime.fromisoformat(sold_at_str)
-                    if sold_at.tzinfo is None:
-                        sold_at = sold_at.replace(tzinfo=timezone.utc)
-                    sold_at = sold_at.astimezone(timezone.utc)
-                    if (now - sold_at).total_seconds() < 86400:
-                        continue
-
-                    product_id = int(product["product_id"])
-                    await session_manager.logout_and_delete_product_session(product_id)
-                    account_label = product["username"] or product["first_name"] or "—"
-                    await log_purchase(
-                        "admin_action",
-                        action=(
-                            f"Сессия проданного товара #{product_id} удалена через 24 часа | "
-                            f"{product['title']} | {product['phone'] or '—'} | {account_label}"
-                        ),
-                        admin_id="system",
-                    )
-                except Exception as exc:
-                    logger.warning("Could not cleanup sold session #%s: %s", product["product_id"], exc)
-        except Exception as exc:
-            logger.error("Ошибка в фоновой задаче cleanup_sold_product_sessions: %s", exc)
-            await asyncio.sleep(300)
 
 
 async def on_startup() -> None:

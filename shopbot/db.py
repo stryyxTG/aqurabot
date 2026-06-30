@@ -1905,21 +1905,6 @@ async def get_product_session_path(product_id: int) -> str | None:
             return row["session_path"] if row else None
 
 
-async def list_sold_products_with_sessions() -> list:
-    async with get_db_conn() as db:
-        async with db.execute(
-            """
-            SELECT product_id, title, phone, username, first_name, session_path, sold_at
-            FROM products
-            WHERE status = 'sold'
-              AND session_path IS NOT NULL
-              AND TRIM(session_path) != ''
-              AND COALESCE(skip_session_cleanup, 0) = 0
-            """
-        ) as cursor:
-            return await cursor.fetchall()
-
-
 async def list_sold_products_for_manual_cleanup() -> list:
     async with get_db_conn() as db:
         async with db.execute(
@@ -2235,15 +2220,6 @@ async def revert_expired_product(product_id: int) -> bool:
 
         await db.commit()
         return True
-
-
-async def get_waiting_products() -> list:
-    """Получает список товаров в статусе waiting_code"""
-    async with get_db_conn() as db:
-        async with db.execute(
-            "SELECT product_id, sold_to, sold_at FROM products WHERE status = 'waiting_code'"
-        ) as cursor:
-            return await cursor.fetchall()
 
 
 async def reset_stats() -> None:

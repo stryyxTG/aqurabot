@@ -635,22 +635,6 @@ def purchase_waiting_kb(product_id: int, back_callback: str) -> InlineKeyboardMa
         ]
     )
 
-def verification_confirm_kb(product_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="Да, я вошёл", callback_data=f"check_verification_confirm:{product_id}", icon_custom_emoji_id=BTN_ICON_CHECK)],
-            [InlineKeyboardButton(text="Назад", callback_data=f"purchase_waiting:{product_id}", icon_custom_emoji_id=BTN_ICON_BACK)],
-        ]
-    )
-
-def verification_kb(product_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="Проверить еще раз", callback_data=f"check_verification:{product_id}")],
-            [InlineKeyboardButton(text="В меню", callback_data="menu_home", icon_custom_emoji_id=BTN_ICON_HOME)],
-        ]
-    )
-
 
 def code_received_kb(product_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(

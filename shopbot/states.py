@@ -36,10 +36,6 @@ class AdminCatalogStates(StatesGroup):
     waiting_department_description = State()
     waiting_department_extra_code = State()
 
-class VerificationStates(StatesGroup):
-    waiting_verification = State()
-
-
 class AdminEditProductStates(StatesGroup):
     waiting_new_value = State()
 

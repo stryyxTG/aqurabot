@@ -137,14 +137,6 @@ class ShopSessionManager:
         await update_product_session_path(product_id, "")
         return removed_any
 
-    def _parse_dt(self, value: str | None) -> datetime:
-        if not value:
-            return datetime.now(timezone.utc) - timedelta(minutes=10)
-        parsed = datetime.fromisoformat(value)
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed.astimezone(timezone.utc)
-
     async def _get_telegram_dialog(self, client):
         async for dialog in client.iter_dialogs():
             entity = dialog.entity
@@ -453,6 +445,7 @@ class ShopSessionManager:
             raise RuntimeError(f"Ошибка при получении к0dа: {str(e)}")
 
     async def detect_buyer_login(self, product_id: int, since: str | None) -> dict:
+        return {"confirmed": False, "error": "Auto login verification removed"}
         """Detect buyer login by checking for new active sessions in account.
         
         Uses GetAuthorizationsRequest API to get sessions with creation dates,
