@@ -136,8 +136,8 @@ def normalize_session_metadata(
     raw = _flatten_common_metadata(raw or {})
     profile = dict(fallback_profile or random_desktop_profile())
 
-    api_id = _first_value(raw, "api_id", "app_id")
-    api_hash = _first_value(raw, "api_hash", "app_hash")
+    api_id = _first_value(raw, "api_id", "app_id", "apiId", "appId")
+    api_hash = _first_value(raw, "api_hash", "app_hash", "apiHash", "appHash")
     try:
         api_id = int(api_id) if api_id else int(default_api_id)
     except Exception:
@@ -147,9 +147,9 @@ def normalize_session_metadata(
         {
             "api_id": api_id,
             "api_hash": str(api_hash or default_api_hash),
-            "device_model": str(_first_value(raw, "device_model", "device") or profile["device_model"]),
-            "system_version": str(_first_value(raw, "system_version", "sdk") or profile["system_version"]),
-            "app_version": str(_first_value(raw, "app_version") or profile["app_version"]),
+            "device_model": str(_first_value(raw, "device_model", "deviceModel", "device") or profile["device_model"]),
+            "system_version": str(_first_value(raw, "system_version", "systemVersion", "sdk") or profile["system_version"]),
+            "app_version": str(_first_value(raw, "app_version", "appVersion") or profile["app_version"]),
             "lang_code": "en",
             "system_lang_code": "en-US",
             "lang_pack": "tdesktop",
