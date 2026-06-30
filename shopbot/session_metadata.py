@@ -66,13 +66,22 @@ def normalize_match_key(value: object) -> str:
     return re.sub(r"[^a-z0-9]+", "", text)
 
 
+def match_key_candidates(value: object) -> set[str]:
+    text = str(value or "")
+    normalized = normalize_match_key(text)
+    keys = {normalized} if normalized else set()
+    for digits in re.findall(r"\d{5,}", Path(text).stem):
+        keys.add(digits)
+    return keys
+
+
 def metadata_match_keys(file_name: str | Path, metadata: dict[str, Any] | None = None) -> set[str]:
-    keys = {normalize_match_key(file_name)}
+    keys = match_key_candidates(file_name)
     metadata = metadata or {}
     for key in ("phone", "user_id", "telegram_id", "id", "session_file", "session"):
         value = metadata.get(key)
         if value:
-            keys.add(normalize_match_key(value))
+            keys.update(match_key_candidates(value))
     return {key for key in keys if key}
 
 

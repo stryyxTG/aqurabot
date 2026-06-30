@@ -1663,7 +1663,10 @@ def safe_filename_part(value: object, fallback: str) -> str:
 
 
 def product_account_label(product) -> str:
-    return safe_filename_part(product["phone"] or product["product_id"], str(product["product_id"]))
+    phone_digits = "".join(ch for ch in str(product["phone"] or "") if ch.isdigit())
+    if phone_digits:
+        return safe_filename_part(phone_digits, str(product["product_id"]))
+    return safe_filename_part(product["product_id"], str(product["product_id"]))
 
 
 def unique_account_label(product, used: set[str]) -> str:
