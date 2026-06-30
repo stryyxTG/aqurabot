@@ -54,7 +54,6 @@ from .db import (
     get_balance,
     get_crypto_invoice,
     get_db_conn,
-    find_existing_product_identity,
     get_product,
     get_product_department,
     get_product_group,
@@ -1252,16 +1251,6 @@ def load_existing_session_metadata(session_path: str | Path) -> dict:
     except Exception:
         logger.warning("Could not read session metadata: %s", path)
         return {}
-
-
-def duplicate_product_text(product) -> str:
-    return (
-        f"уже есть товар #{product['product_id']} | "
-        f"телефон: {product['phone'] or '—'} | "
-        f"код/заметка: {product['extra_code'] or '—'} | "
-        f"статус: {product['status']}"
-    )
-
 
 async def scan_session_files() -> dict:
     db_paths = [Path(path).resolve() for path in await list_product_session_paths()]
@@ -6858,7 +6847,6 @@ async def admin_add_bulk_sessions(message: Message, state: FSMContext):
 
         if lower_name.endswith(".zip"):
             imported = 0
-            duplicates = 0
             json_count = 0
             matched = 0
             errors = []
@@ -6885,9 +6873,6 @@ async def admin_add_bulk_sessions(message: Message, state: FSMContext):
                     try:
                         session_bytes = archive.read(item)
                         file_hash = session_file_sha256(session_bytes)
-                        if file_hash in bulk_hashes:
-                            duplicates += 1
-                            continue
                         session_path = unique_uploaded_session_path("bulk", file_hash, inner_name)
                         with open(session_path, "wb") as f:
                             f.write(session_bytes)
@@ -6915,7 +6900,6 @@ async def admin_add_bulk_sessions(message: Message, state: FSMContext):
                 f"Добавлено сессий: <b>{imported}</b>\n"
                 f"JSON внутри: <b>{json_count}</b>\n"
                 f"JSON применено: <b>{matched}</b>\n"
-                f"Дублей пропущено: <b>{duplicates}</b>\n"
                 f"Всего в пачке: <b>{len(bulk_sessions)}</b>"
             )
             if errors:
@@ -6933,12 +6917,6 @@ async def admin_add_bulk_sessions(message: Message, state: FSMContext):
 
         session_bytes = content
         file_hash = session_file_sha256(session_bytes)
-        if file_hash in bulk_hashes:
-            await message.answer(
-                "Этот .session уже есть в текущей пачке и повторно не добавлен.\n\n"
-                f"Файл: <code>{html.escape(file_name)}</code>"
-            )
-            return
 
         session_path = unique_uploaded_session_path("bulk", file_hash, file_name)
         with open(session_path, "wb") as f:
@@ -7408,8 +7386,6 @@ async def finish_admin_add_products(message: Message, state: FSMContext, admin_i
 
         created_products = []
         errors = []
-        seen_telegram_ids: dict[int, int] = {}
-        seen_phones: dict[str, int] = {}
         bulk_metadata_by_session = data.get("bulk_metadata_by_session", {}) or {}
 
         for idx, session_path in enumerate(bulk_sessions, 1):
@@ -7432,27 +7408,6 @@ async def finish_admin_add_products(message: Message, state: FSMContext, admin_i
                 telegram_id = alive_check.get("user_id")
                 if telegram_id is not None:
                     telegram_id = int(telegram_id)
-                    if telegram_id in seen_telegram_ids:
-                        discard_session_files(session_path)
-                        errors.append(f"Сессия #{idx}: дубль Telegram ID {telegram_id} в текущей пачке (первая: #{seen_telegram_ids[telegram_id]}).")
-                        continue
-                    seen_telegram_ids[telegram_id] = idx
-                if phone:
-                    if phone in seen_phones:
-                        discard_session_files(session_path)
-                        errors.append(f"Сессия #{idx}: дубль телефона {phone} в текущей пачке (первая: #{seen_phones[phone]}).")
-                        continue
-                    seen_phones[phone] = idx
-
-                existing = await find_existing_product_identity(
-                    session_path=str(session_path),
-                    phone=phone,
-                    telegram_id=telegram_id,
-                )
-                if existing:
-                    discard_session_files(session_path)
-                    errors.append(f"Сессия #{idx}: дубль в базе, {duplicate_product_text(existing)}.")
-                    continue
 
                 product_id = await create_product(
                     title=data["title"],
@@ -7504,37 +7459,6 @@ async def finish_admin_add_products(message: Message, state: FSMContext, admin_i
                     f"Сессия невалидна и не принята:\n\n{html.escape(str(error))}\n\n"
                     "Аккаунт не добавлен в магазин.",
                     reply_markup=admin_home_kb()
-                )
-                return
-            existing = await find_existing_product_identity(
-                session_path=str(uploaded_session_path),
-                phone=(uploaded_alive_check.get("phone") or "").strip(),
-                telegram_id=uploaded_alive_check.get("user_id"),
-                extra_code=extra_code,
-            )
-            if existing:
-                discard_session_files(uploaded_session_path)
-                await state.clear()
-                await session_manager.cleanup(admin_id)
-                await message.answer(
-                    "Дубль не добавлен.\n\n"
-                    f"{html.escape(duplicate_product_text(existing))}",
-                    reply_markup=admin_home_kb(),
-                )
-                return
-        else:
-            existing = await find_existing_product_identity(
-                phone=(data.get("phone", "") or "").strip(),
-                telegram_id=data.get("telegram_id"),
-                extra_code=extra_code,
-            )
-            if existing:
-                await state.clear()
-                await session_manager.cleanup(admin_id)
-                await message.answer(
-                    "Дубль не добавлен.\n\n"
-                    f"{html.escape(duplicate_product_text(existing))}",
-                    reply_markup=admin_home_kb(),
                 )
                 return
         product_id = await create_product(
