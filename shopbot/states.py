@@ -65,6 +65,10 @@ class UserCartStates(StatesGroup):
     waiting_group_quantity = State()
 
 
+class UserCatalogStates(StatesGroup):
+    waiting_country_query = State()
+
+
 class ServiceOrderStates(StatesGroup):
     waiting_recipient = State()
 

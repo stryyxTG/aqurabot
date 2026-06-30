@@ -182,7 +182,7 @@ from .proxy_store import load_global_proxy, save_global_proxy
 from .proxy_utils import check_proxy_connectivity, format_proxy_summary, parse_proxy_input
 from .paths import product_session_base_path, SESSIONS_DIR, ROOT_DIR
 from .session_flow import LoginExpiredError, ShopSessionManager
-from .states import AdminAddProductStates, AdminBroadcastStates, AdminCardsStates, AdminCatalogStates, AdminCleanStates, AdminProxyStates, AdminTopUpStates, AdminEditProductStates, AdminEditProductGroupStates, AdminSearchUserStates, AdminSearchProductStates, AdminDropsStates, UserTopUpStates, UserCartStates, ServiceOrderStates, AdminScanStates
+from .states import AdminAddProductStates, AdminBroadcastStates, AdminCardsStates, AdminCatalogStates, AdminCleanStates, AdminProxyStates, AdminTopUpStates, AdminEditProductStates, AdminEditProductGroupStates, AdminSearchUserStates, AdminSearchProductStates, AdminDropsStates, UserTopUpStates, UserCartStates, UserCatalogStates, ServiceOrderStates, AdminScanStates
 
 
 logging.basicConfig(
@@ -1613,10 +1613,17 @@ async def build_tdata_archive(product, output_dir: Path) -> Path:
                 pass
 
 
-async def build_country_rows() -> list[list[InlineKeyboardButton]]:
+def normalize_country_search(value: object) -> str:
+    return " ".join(str(value or "").casefold().split())
+
+
+async def build_country_rows(search_query: str | None = None) -> list[list[InlineKeyboardButton]]:
     rows = []
     counts = await list_country_counts()
+    query = normalize_country_search(search_query)
     for row in counts:
+        if query and query not in normalize_country_search(row["country"]):
+            continue
         rows.append([
             InlineKeyboardButton(
                 text=f"{row['country']} ({row['total']})",
@@ -1751,6 +1758,19 @@ def build_proxy_text() -> str:
         "<b>Прокси</b>\n\n"
         "Используется для новых добавлений аккаунтов.\n\n"
         f"<code>{html.escape(format_proxy_summary(proxy))}</code>"
+    )
+
+
+async def check_proxy_latency(proxy_settings: dict) -> dict:
+    return await check_proxy_connectivity(
+        settings.api_id,
+        settings.api_hash,
+        proxy_settings,
+        device_model=settings.device_model,
+        system_version=settings.system_version,
+        app_version=settings.app_version,
+        lang_code=settings.lang_code,
+        system_lang_code=settings.system_lang_code,
     )
 
 
@@ -2204,6 +2224,44 @@ async def catalog_accounts(query: CallbackQuery):
     await query.answer()
     text = f"{ICON_TG_ACCOUNTS} <b>ТГ</b>\n\nВыберите страну:"
     await safe_edit(query.message, text, catalog_home_kb(await build_country_rows()))
+
+
+@dp.callback_query(F.data == "catalog_country_search")
+async def catalog_country_search(query: CallbackQuery, state: FSMContext):
+    await ensure_known_user(query)
+    await query.answer()
+    await state.set_state(UserCatalogStates.waiting_country_query)
+    await safe_edit(
+        query.message,
+        f"{ICON_TG_ACCOUNTS} <b>Поиск страны</b>\n\nВведите название страны или часть названия.",
+        cancel_flow_kb("catalog_accounts"),
+    )
+
+
+@dp.message(UserCatalogStates.waiting_country_query)
+async def catalog_country_search_finish(message: Message, state: FSMContext):
+    await ensure_known_user(message)
+    query_text = (message.text or "").strip()
+    if not query_text:
+        await message.answer("Введите название страны или часть названия.", reply_markup=cancel_flow_kb("catalog_accounts"))
+        return
+
+    rows = await build_country_rows(query_text)
+    await state.clear()
+    if not rows:
+        await message.answer(
+            f"{ICON_BLOCK} <b>Страна не найдена</b>\n\n"
+            f"Запрос: <code>{html.escape(query_text)}</code>",
+            reply_markup=catalog_home_kb([]),
+        )
+        return
+
+    await message.answer(
+        f"{ICON_TG_ACCOUNTS} <b>Результаты поиска</b>\n\n"
+        f"Запрос: <code>{html.escape(query_text)}</code>\n"
+        f"Найдено: <b>{len(rows)}</b>",
+        reply_markup=catalog_home_kb(rows),
+    )
 
 
 @dp.callback_query(F.data == "catalog_premium")
@@ -5721,6 +5779,8 @@ async def admin_proxy_set(query: CallbackQuery, state: FSMContext):
         "Отправь прокси одним сообщением. Поддерживаются:\n"
         "• <code>host:port</code>\n"
         "• <code>host:port:login:password</code>\n"
+        "• <code>socks5://login:password@host:port</code>\n"
+        "• <code>http://login:password@host:port</code>\n"
         "• <code>host:port:secret</code>\n"
         "• ссылка <code>t.me/proxy</code> или <code>tg://proxy</code>",
         cancel_flow_kb("admin_proxy"),
@@ -5738,6 +5798,44 @@ async def admin_proxy_clear(query: CallbackQuery):
     await safe_edit(query.message, build_proxy_text(), proxy_menu_kb(False))
 
 
+@dp.callback_query(F.data == "admin_proxy_ping")
+async def admin_proxy_ping(query: CallbackQuery):
+    await ensure_known_user(query)
+    await query.answer("Проверяю прокси...")
+    if not is_admin(query.from_user.id):
+        return
+    proxy_settings = load_global_proxy()
+    if not proxy_settings:
+        await safe_edit(query.message, build_proxy_text(), proxy_menu_kb(False))
+        return
+
+    await safe_edit(
+        query.message,
+        "<b>Проверяю прокси...</b>\n\n"
+        f"<code>{html.escape(format_proxy_summary(proxy_settings))}</code>",
+        proxy_menu_kb(True),
+    )
+    try:
+        result = await check_proxy_latency(proxy_settings)
+    except Exception as exc:
+        await safe_edit(
+            query.message,
+            "<b>Прокси не прошел проверку</b>\n\n"
+            f"<code>{html.escape(format_proxy_summary(proxy_settings))}</code>\n\n"
+            f"Ошибка: <code>{html.escape(str(exc) or type(exc).__name__)}</code>",
+            proxy_menu_kb(True),
+        )
+        return
+
+    await safe_edit(
+        query.message,
+        "<b>Прокси работает</b>\n\n"
+        f"<code>{html.escape(format_proxy_summary(proxy_settings))}</code>\n\n"
+        f"<b>Пинг:</b> {int(result.get('latency_ms', 0))} мс",
+        proxy_menu_kb(True),
+    )
+
+
 @dp.message(AdminProxyStates.waiting_proxy_input)
 async def admin_proxy_input(message: Message, state: FSMContext):
     try:
@@ -5747,16 +5845,7 @@ async def admin_proxy_input(message: Message, state: FSMContext):
         return
     progress = await message.answer("Проверяю прокси...")
     try:
-        await check_proxy_connectivity(
-            settings.api_id,
-            settings.api_hash,
-            proxy_settings,
-            device_model=settings.device_model,
-            system_version=settings.system_version,
-            app_version=settings.app_version,
-            lang_code=settings.lang_code,
-            system_lang_code=settings.system_lang_code,
-        )
+        result = await check_proxy_latency(proxy_settings)
     except Exception as exc:
         await progress.edit_text(
             "Прокси не прошел проверку и не был сохранен.\n\n"
@@ -5768,8 +5857,10 @@ async def admin_proxy_input(message: Message, state: FSMContext):
     await log_purchase("admin_action", action="Обновлен общий прокси", admin_id=message.from_user.id)
     await state.clear()
     await progress.edit_text(
-        "Прокси сохранен.\n\n" + f"<code>{html.escape(format_proxy_summary(proxy_settings))}</code>",
-        reply_markup=admin_home_kb(),
+        "Прокси сохранен.\n\n"
+        f"<code>{html.escape(format_proxy_summary(proxy_settings))}</code>\n\n"
+        f"<b>Пинг:</b> {int(result.get('latency_ms', 0))} мс",
+        reply_markup=proxy_menu_kb(True),
     )
 
 
@@ -7112,6 +7203,8 @@ async def cancel_flow(query: CallbackQuery, state: FSMContext):
         await safe_edit(query.message, text, back_to_main_kb(is_admin(query.from_user.id)))
     elif back_callback == "menu_catalog":
         await safe_edit(query.message, f"{ICON_CATALOG_SECTIONS} <b>Каталог</b>\n\nВыберите раздел:", catalog_sections_keyboard())
+    elif back_callback == "catalog_accounts":
+        await safe_edit(query.message, f"{ICON_TG_ACCOUNTS} <b>ТГ</b>\n\nВыберите страну:", catalog_home_kb(await build_country_rows()))
     elif back_callback == "user_topup_methods":
         await safe_edit(
             query.message,

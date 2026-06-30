@@ -3,6 +3,7 @@
 import asyncio
 import importlib.util
 import logging
+import time
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -41,6 +42,7 @@ def parse_proxy_input(raw_value: str) -> ProxySettings:
             "port": _validate_port(port),
             "username": None,
             "password": None,
+            "rdns": True,
         }
 
     if len(parts) == 3 and _looks_like_mtproto_secret(parts[2]):
@@ -64,10 +66,11 @@ def parse_proxy_input(raw_value: str) -> ProxySettings:
             "port": _validate_port(port),
             "username": username,
             "password": password,
+            "rdns": True,
         }
 
     raise ValueError(
-        "Не понял формат прокси. Поддерживаются host:port, host:port:login:password, socks5://login:pass@host:port, http://host:port, host:port:secret, t.me/proxy и t.me/socks."
+        "Не понял формат прокси. Поддерживаются host:port, host:port:login:password, socks5://login:pass@host:port, socks4://host:port, http://host:port, host:port:secret, t.me/proxy и t.me/socks."
     )
 
 
@@ -76,6 +79,7 @@ def normalize_proxy_settings(proxy_settings: ProxySettings | None) -> ProxySetti
         return None
 
     proxy_type = str(proxy_settings.get("type") or "").strip().lower()
+    proxy_type = _normalize_proxy_type(proxy_type)
     if proxy_type not in {"socks5", "socks4", "http", "mtproto"}:
         return None
 
@@ -89,6 +93,7 @@ def normalize_proxy_settings(proxy_settings: ProxySettings | None) -> ProxySetti
             "port": port,
             "username": _empty_to_none(proxy_settings.get("username")),
             "password": _empty_to_none(proxy_settings.get("password")),
+            "rdns": _parse_bool(proxy_settings.get("rdns"), True),
         }
 
     secret = _normalize_secret(str(proxy_settings.get("secret") or ""))
@@ -114,6 +119,13 @@ def format_proxy_summary(proxy_settings: ProxySettings | None) -> str:
     ]
     if proxy['type'] == 'mtproto':
         lines.append(f"Ключ: {mask_secret(proxy['secret'])}")
+    elif proxy['type'] in {'socks5', 'socks4'}:
+        lines.append(f"DNS через прокси: {'да' if proxy.get('rdns', True) else 'нет'}")
+        if proxy.get('username'):
+            lines.append(f"Логин: {proxy['username']}")
+            lines.append("Авторизация: включена")
+        else:
+            lines.append("Авторизация: не нужна")
     elif proxy.get('username'):
         lines.append(f"Логин: {proxy['username']}")
         lines.append("Авторизация: включена")
@@ -149,9 +161,7 @@ def build_telegram_client(
     }
     if proxy:
         if proxy['type'] in {'socks5', 'socks4', 'http'}:
-            if not _has_socks_support():
-                raise RuntimeError("Для SOCKS/HTTP прокси нужен PySocks или python-socks. Установи зависимости из requirements.txt.")
-            kwargs['proxy'] = (proxy['type'], proxy['host'], int(proxy['port']), True, proxy.get('username'), proxy.get('password'))
+            kwargs['proxy'] = _pysocks_proxy_tuple(proxy)
         elif proxy['type'] == 'mtproto':
             transport = str(proxy.get('transport') or 'intermediate')
             kwargs['connection'] = _mtproto_connection_class(transport)
@@ -173,7 +183,7 @@ async def check_proxy_connectivity(
     app_version: str = "11.5.1",
     lang_code: str = "ru",
     system_lang_code: str = "ru-RU",
-) -> None:
+) -> dict[str, Any]:
     proxy = normalize_proxy_settings(proxy_settings)
     if not proxy:
         raise RuntimeError("Прокси не задан.")
@@ -195,11 +205,14 @@ async def check_proxy_connectivity(
     )
     try:
         try:
+            started_at = time.perf_counter()
             await asyncio.wait_for(client.connect(), timeout=timeout)
         except (OSError, ConnectionError, EOFError, asyncio.IncompleteReadError, asyncio.TimeoutError, ValueError) as exc:
             raise RuntimeError(str(exc) or type(exc).__name__) from exc
         if not client.is_connected():
             raise RuntimeError("Telethon не смог установить соединение через прокси.")
+        latency_ms = int((time.perf_counter() - started_at) * 1000)
+        return {"ok": True, "latency_ms": latency_ms}
     finally:
         try:
             await client.disconnect()
@@ -209,9 +222,7 @@ async def check_proxy_connectivity(
 
 def _proxy_kwargs(proxy: ProxySettings) -> dict[str, Any]:
     if proxy['type'] in {'socks5', 'socks4', 'http'}:
-        if not _has_socks_support():
-            raise RuntimeError("Для SOCKS/HTTP прокси нужен PySocks или python-socks. Установи зависимости из requirements.txt.")
-        return {'proxy': (proxy['type'], proxy['host'], int(proxy['port']), True, proxy.get('username'), proxy.get('password'))}
+        return {'proxy': _pysocks_proxy_tuple(proxy)}
     if proxy['type'] == 'mtproto':
         transport = str(proxy.get('transport') or 'intermediate')
         secret = proxy['secret']
@@ -226,17 +237,19 @@ def _proxy_kwargs(proxy: ProxySettings) -> dict[str, Any]:
 
 def _parse_proxy_url(value: str) -> ProxySettings:
     parsed = urlparse(value)
-    proxy_type = (parsed.scheme or "").strip().lower()
+    proxy_type = _normalize_proxy_type((parsed.scheme or "").strip().lower())
     if proxy_type not in {"socks5", "socks4", "http"}:
-        raise ValueError("Ссылка прокси должна начинаться с socks5://, socks4:// или http://.")
+        raise ValueError("Ссылка прокси должна начинаться с socks5://, socks4://, http:// или https://.")
     if not parsed.hostname:
         raise ValueError("В ссылке прокси не указан сервер.")
+    query = parse_qs(parsed.query)
     return {
         "type": proxy_type,
         "host": _validate_host(parsed.hostname),
         "port": _validate_port(parsed.port),
         "username": unquote(parsed.username) if parsed.username else None,
         "password": unquote(parsed.password) if parsed.password else None,
+        "rdns": _parse_bool(query.get("rdns", [None])[0], True),
     }
 
 
@@ -259,6 +272,7 @@ def _parse_socks_url(value: str) -> ProxySettings:
         "port": _validate_port(port),
         "username": _empty_to_none(unquote(username)),
         "password": _empty_to_none(unquote(password)),
+        "rdns": True,
     }
 
 
@@ -270,6 +284,47 @@ def _parse_mtproto_url(value: str) -> ProxySettings:
     secret = _normalize_secret(query.get("secret", [""])[0])
     transport = _detect_mtproto_transport(secret)
     return {"type": "mtproto", "host": host, "port": port, "secret": secret, "transport": transport}
+
+
+def _normalize_proxy_type(proxy_type: str) -> str:
+    normalized = (proxy_type or "").strip().lower()
+    if normalized in {"socks", "socks5h"}:
+        return "socks5"
+    if normalized == "socks4a":
+        return "socks4"
+    if normalized == "https":
+        return "http"
+    return normalized
+
+
+def _pysocks_proxy_tuple(proxy: ProxySettings) -> tuple:
+    socks_module = _load_socks_module()
+    proxy_type = proxy["type"]
+    proxy_type_map = {
+        "socks5": socks_module.SOCKS5,
+        "socks4": socks_module.SOCKS4,
+        "http": socks_module.HTTP,
+    }
+    if proxy_type not in proxy_type_map:
+        raise RuntimeError(f"Неподдерживаемый тип прокси: {proxy_type}")
+    return (
+        proxy_type_map[proxy_type],
+        proxy["host"],
+        int(proxy["port"]),
+        bool(proxy.get("rdns", True)),
+        proxy.get("username"),
+        proxy.get("password"),
+    )
+
+
+def _load_socks_module():
+    if not _has_socks_support():
+        raise RuntimeError("Для SOCKS/HTTP прокси нужен PySocks. Установи зависимости из requirements.txt.")
+    try:
+        import socks
+    except Exception as exc:
+        raise RuntimeError("PySocks установлен некорректно. Переустанови зависимости из requirements.txt.") from exc
+    return socks
 
 
 def mask_secret(value: str | None) -> str:
@@ -331,5 +386,13 @@ def _empty_to_none(value: Any) -> str | None:
     return text or None
 
 
+def _parse_bool(value: Any, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on", "да"}
+
+
 def _has_socks_support() -> bool:
-    return bool(importlib.util.find_spec("python_socks") or importlib.util.find_spec("socks"))
+    return bool(importlib.util.find_spec("socks"))

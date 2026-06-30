@@ -261,6 +261,7 @@ def drop_manage_kb(user_id: int) -> InlineKeyboardMarkup:
 
 def catalog_home_kb(country_rows: list[list[InlineKeyboardButton]]) -> InlineKeyboardMarkup:
     rows = list(country_rows)
+    rows.append([InlineKeyboardButton(text="Поиск", callback_data="catalog_country_search")])
     rows.append([InlineKeyboardButton(text="Назад", callback_data="menu_catalog", icon_custom_emoji_id=BTN_ICON_BACK)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -602,6 +603,7 @@ def cancel_flow_kb(back_callback: str = "admin_home") -> InlineKeyboardMarkup:
 def proxy_menu_kb(has_proxy: bool) -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton(text="Установить / Заменить", callback_data="admin_proxy_set")]]
     if has_proxy:
+        rows.append([InlineKeyboardButton(text="Проверить пинг", callback_data="admin_proxy_ping")])
         rows.append([InlineKeyboardButton(text="Удалить прокси", callback_data="admin_proxy_clear")])
     rows.append([InlineKeyboardButton(text="Назад", callback_data="admin_home", icon_custom_emoji_id=BTN_ICON_BACK)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
