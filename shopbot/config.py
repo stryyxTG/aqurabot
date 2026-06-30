@@ -31,7 +31,7 @@ class Settings:
     required_channel_url: str = "https://t.me/+5wYNfVbpXJo2YzIy"
     rub_to_uah_rate: float = 0.45
     device_model: str = "Samsung Galaxy S24 Ultra"
-    system_version: str = "Android 14"
+    system_version: str = "Android 14" 
     app_version: str = "11.5.1"
     lang_code: str = "ru"
     system_lang_code: str = "ru-RU"

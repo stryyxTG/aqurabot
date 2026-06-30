@@ -267,7 +267,7 @@ def catalog_home_kb(country_rows: list[list[InlineKeyboardButton]]) -> InlineKey
 
 def catalog_sections_kb(*, premium_enabled: bool = True, stars_enabled: bool = True) -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton(text="Akkаунты", callback_data="catalog_accounts", icon_custom_emoji_id=BTN_ICON_TG_ACCOUNTS)],
+        [InlineKeyboardButton(text="ТГ", callback_data="catalog_accounts", icon_custom_emoji_id=BTN_ICON_TG_ACCOUNTS)],
     ]
     if premium_enabled:
         rows.append([InlineKeyboardButton(text="Premium", callback_data="catalog_premium", icon_custom_emoji_id=BTN_ICON_TG_PREMIUM)])

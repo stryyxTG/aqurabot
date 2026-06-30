@@ -2202,7 +2202,7 @@ async def menu_catalog(query: CallbackQuery):
 async def catalog_accounts(query: CallbackQuery):
     await ensure_known_user(query)
     await query.answer()
-    text = f"{ICON_TG_ACCOUNTS} <b>Akkаунты</b>\n\nВыберите страну:"
+    text = f"{ICON_TG_ACCOUNTS} <b>ТГ</b>\n\nВыберите страну:"
     await safe_edit(query.message, text, catalog_home_kb(await build_country_rows()))
 
 
