@@ -1061,7 +1061,7 @@ def clean_stats_text(result: dict) -> str:
         f"missing_files : {result['missing_files']}\n"
         f"unsafe_paths  : {result['unsafe_paths']}\n"
         f"server_size   : {result['server_size'] / 1024 / 1024:.2f} MB\n"
-        "account_login : disabled</code></pre>"
+        "account_logout: enabled</code></pre>"
     )
 
 
@@ -1876,11 +1876,11 @@ async def clean_confirm(query: CallbackQuery, state: FSMContext):
         query.message,
         f"{clean_stats_text(result)}\n\n"
         "<b>Подтвердите ручную очистку</b>\n\n"
+        "Бот подключится к серверным сессиям проданных товаров и выйдет из аккаунтов.\n"
         "Будут удалены session-файлы.\n"
         "Товар будет полностью удалён из базы.\n"
         "Удалится связанная история покупки.\n"
-        "Восстановление через бота невозможно.\n"
-        "Подключений к аккаунтам не будет.",
+        "Восстановление через бота невозможно.",
         admin_clean_confirm_kb(flow_id),
     )
 
@@ -1908,7 +1908,7 @@ async def clean_execute(query: CallbackQuery, state: FSMContext):
     await safe_edit(
         query.message,
         "<b>Очистка проданных сессий...</b>\n\n"
-        "Работаю только с локальными файлами и базой данных.",
+        "Подключаюсь только к проданным товарам, выхожу из аккаунтов и удаляю серверные файлы.",
     )
 
     result = await scan_sold_sessions_for_clean()
@@ -1930,15 +1930,43 @@ async def clean_execute(query: CallbackQuery, state: FSMContext):
             logger.warning("Skipped changed sold product during manual clean: %s", product_id)
             continue
 
+        try:
+            related_files = clean_related_session_files(session_path)
+        except (OSError, RuntimeError, ValueError):
+            failed += 1
+            continue
+
+        if not all(is_clean_session_path_allowed(path) for path in related_files):
+            failed += 1
+            logger.warning("Skipped unsafe sold session path during manual clean: %s", session_path)
+            continue
+
+        existing_files = [path for path in related_files if path.exists()]
+        expected_removed_size = 0
+        for path in existing_files:
+            try:
+                expected_removed_size += path.stat().st_size if path.is_file() else 0
+            except OSError:
+                logger.warning("Could not stat sold session file before cleanup: %s", path)
+        expected_removed_count = len(existing_files)
+
+        try:
+            await session_manager.logout_and_delete_product_session(product_id)
+        except Exception:
+            failed += 1
+            logger.exception("Could not logout and delete sold product session #%s", product_id)
+            continue
+
         files_ok, removed_count, removed_size = remove_clean_session_files(session_path)
-        deleted_files += removed_count
-        deleted_size += removed_size
         if not files_ok:
             failed += 1
             continue
 
+        deleted_files += max(removed_count, expected_removed_count)
+        deleted_size += max(removed_size, expected_removed_size)
+
         try:
-            delete_result = await delete_sold_product_with_history(product_id, session_path)
+            delete_result = await delete_sold_product_with_history(product_id, session_path, allow_session_cleared=True)
         except Exception:
             failed += 1
             logger.exception("Could not delete sold product #%s after session cleanup", product_id)
@@ -1955,7 +1983,7 @@ async def clean_execute(query: CallbackQuery, state: FSMContext):
         f"<b>Удалено файлов:</b> {deleted_files}\n"
         f"<b>Освобождено:</b> {human_size(deleted_size)}\n"
         f"<b>Ошибок:</b> {failed}\n\n"
-        "Подключений к Telegram-аккаунтам не выполнялось."
+        "Logout выполнен только для проданных товаров, попавших в безопасную очистку."
     )
     await render_clean_menu(query.message, state, edit=True, notice=report)
 

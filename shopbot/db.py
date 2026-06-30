@@ -1949,7 +1949,12 @@ async def list_product_session_references() -> list:
             return await cursor.fetchall()
 
 
-async def delete_sold_product_with_history(product_id: int, expected_session_path: str) -> str:
+async def delete_sold_product_with_history(
+    product_id: int,
+    expected_session_path: str,
+    *,
+    allow_session_cleared: bool = False,
+) -> str:
     async with get_db_conn() as db:
         await db.execute("BEGIN IMMEDIATE")
         try:
@@ -1965,7 +1970,12 @@ async def delete_sold_product_with_history(product_id: int, expected_session_pat
             if row["status"] != "sold":
                 await db.rollback()
                 return "status_changed"
-            if (row["session_path"] or "").strip() != (expected_session_path or "").strip():
+            current_session_path = (row["session_path"] or "").strip()
+            expected_session_path = (expected_session_path or "").strip()
+            session_matches = current_session_path == expected_session_path
+            if allow_session_cleared and expected_session_path and not current_session_path:
+                session_matches = True
+            if not session_matches:
                 await db.rollback()
                 return "path_changed"
 

@@ -720,6 +720,7 @@ def admin_product_detail_kb(
         rows.append([InlineKeyboardButton(text="Получить к0d", callback_data=f"admin_get_code:{product_id}", icon_custom_emoji_id=BTN_ICON_CHECK)])
     if can_terminate_sessions:
         rows.append([InlineKeyboardButton(text="Завершить с3ccuu", callback_data=f"admin_terminate_sessions_ask:{product_id}", icon_custom_emoji_id=BTN_ICON_CANCEL)])
+    rows.append([InlineKeyboardButton(text="Удалить товар", callback_data=f"admin_remove_{product_id}", icon_custom_emoji_id=BTN_ICON_CANCEL)])
     rows.append([InlineKeyboardButton(text="Назад", callback_data=back_callback, icon_custom_emoji_id=BTN_ICON_BACK)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
