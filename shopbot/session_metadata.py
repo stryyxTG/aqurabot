@@ -71,6 +71,13 @@ def session_json_path(session_path: str | Path) -> Path:
     return Path(f"{path}.json")
 
 
+def session_original_json_path(session_path: str | Path) -> Path:
+    path = Path(session_path)
+    if path.suffix == ".session":
+        return path.with_suffix(".original.json")
+    return Path(f"{path}.original.json")
+
+
 def normalize_match_key(value: object) -> str:
     text = Path(str(value or "")).stem.casefold()
     text = re.sub(r"(?:\.session|\.json)$", "", text)
@@ -210,11 +217,27 @@ def write_session_metadata(
     return path
 
 
+def write_original_session_json(session_path: str | Path, content: str | bytes) -> Path:
+    path = session_original_json_path(session_path)
+    if isinstance(content, bytes):
+        path.write_bytes(content)
+    else:
+        path.write_bytes(content.encode("utf-8"))
+    return path
+
+
 def copy_session_metadata(source_session_path: str | Path, target_session_path: str | Path) -> Path | None:
     source = session_json_path(source_session_path)
-    if not source.exists():
-        return None
-    target = session_json_path(target_session_path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, target)
-    return target
+    copied: Path | None = None
+    if source.exists():
+        target = session_json_path(target_session_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        copied = target
+    original_source = session_original_json_path(source_session_path)
+    if original_source.exists():
+        original_target = session_original_json_path(target_session_path)
+        original_target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(original_source, original_target)
+        copied = original_target
+    return copied

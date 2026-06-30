@@ -62,7 +62,7 @@ class ShopSessionManager:
             await flow.client.disconnect()
         except Exception:
             pass
-        for suffix in (".session", ".json", ".session-journal", ".session-wal", ".session-shm"):
+        for suffix in (".session", ".json", ".original.json", ".session-journal", ".session-wal", ".session-shm"):
             path = Path(f"{flow.temp_session_base}{suffix}")
             if path.exists():
                 try:
@@ -71,7 +71,7 @@ class ShopSessionManager:
                     pass
 
     def _cleanup_temp_files(self, temp_session_base: Path) -> None:
-        for suffix in (".session", ".json", ".session-journal", ".session-wal", ".session-shm"):
+        for suffix in (".session", ".json", ".original.json", ".session-journal", ".session-wal", ".session-shm"):
             path = Path(f"{temp_session_base}{suffix}")
             if path.exists():
                 try:
@@ -136,7 +136,7 @@ class ShopSessionManager:
         base_text = str(session_file)
         if base_text.endswith(".session"):
             base_text = base_text[:-8]
-        for suffix in (".session", ".json", ".session-journal", ".session-wal", ".session-shm"):
+        for suffix in (".session", ".json", ".original.json", ".session-journal", ".session-wal", ".session-shm"):
             candidates.add(Path(f"{base_text}{suffix}"))
         for path in candidates:
             if path.exists():
@@ -353,7 +353,7 @@ class ShopSessionManager:
             final_session.unlink()
         shutil.copy2(source_session, final_session)
         copy_session_metadata(flow.temp_session_base, final_session)
-        for suffix in (".session", ".json", ".session-journal", ".session-wal", ".session-shm"):
+        for suffix in (".session", ".json", ".original.json", ".session-journal", ".session-wal", ".session-shm"):
             path = Path(f"{flow.temp_session_base}{suffix}")
             if path.exists():
                 try:

@@ -187,7 +187,9 @@ from .session_metadata import (
     load_metadata_file,
     metadata_match_keys,
     normalize_session_metadata,
+    session_original_json_path,
     session_json_path,
+    write_original_session_json,
     write_session_metadata,
 )
 from .states import AdminAddProductStates, AdminBroadcastStates, AdminCardsStates, AdminCatalogStates, AdminCleanStates, AdminProxyStates, AdminTopUpStates, AdminEditProductStates, AdminEditProductGroupStates, AdminSearchUserStates, AdminSearchProductStates, AdminDropsStates, UserTopUpStates, UserCartStates, UserCatalogStates, ServiceOrderStates, AdminScanStates
@@ -1008,7 +1010,7 @@ def related_session_files(session_path: str | Path) -> set[Path]:
     base = str(path)
     if base.endswith(".session"):
         base = base[:-8]
-    return {Path(f"{base}{suffix}").resolve() for suffix in (".session", ".json", ".session-journal", ".session-wal", ".session-shm")}
+    return {Path(f"{base}{suffix}").resolve() for suffix in (".session", ".json", ".original.json", ".session-journal", ".session-wal", ".session-shm")}
 
 
 def discard_session_files(session_path: str | Path) -> None:
@@ -1037,7 +1039,7 @@ def clean_primary_session_path(session_path: str | Path) -> Path:
 def clean_related_session_files(session_path: str | Path) -> tuple[Path, ...]:
     primary = clean_primary_session_path(session_path)
     base = str(primary)[:-8]
-    return tuple(Path(f"{base}{suffix}").resolve() for suffix in (".session", ".json", ".session-journal", ".session-wal", ".session-shm"))
+    return tuple(Path(f"{base}{suffix}").resolve() for suffix in (".session", ".json", ".original.json", ".session-journal", ".session-wal", ".session-shm"))
 
 
 def is_clean_session_path_allowed(path: Path) -> bool:
@@ -1180,9 +1182,11 @@ def unique_uploaded_session_path(prefix: str, file_hash: str, file_name: str | N
 
 def parse_session_metadata_bytes(content: bytes, file_name: str | None = None) -> dict:
     try:
-        raw = json.loads(content.decode("utf-8-sig"))
+        source_text = content.decode("utf-8-sig")
+        raw = json.loads(source_text)
     except UnicodeDecodeError:
-        raw = json.loads(content.decode("utf-8"))
+        source_text = content.decode("utf-8")
+        raw = json.loads(source_text)
     if not isinstance(raw, dict):
         raise ValueError("JSON должен быть объектом.")
     metadata = normalize_session_metadata(
@@ -1192,6 +1196,8 @@ def parse_session_metadata_bytes(content: bytes, file_name: str | None = None) -
     )
     if file_name and not metadata.get("session_file"):
         metadata["session_file"] = Path(file_name).name
+    metadata["__source_json_text"] = source_text
+    metadata["__source_json_bytes"] = content
     return metadata
 
 
@@ -1211,13 +1217,17 @@ def find_metadata_for_session(session_path: str | Path, lookup: dict, file_name:
 def write_uploaded_session_metadata(session_path: str | Path, metadata: dict | None = None, *, file_name: str | None = None) -> Path:
     source_name = Path(file_name).name if file_name and file_name.lower().endswith(".session") else Path(session_path).name
     extra = {"session_file": source_name}
-    return write_session_metadata(
+    path = write_session_metadata(
         session_path,
         metadata or {},
         default_api_id=settings.api_id,
         default_api_hash=settings.api_hash,
         extra=extra,
     )
+    source_json = (metadata or {}).get("__source_json_bytes") or (metadata or {}).get("__source_json_text")
+    if source_json:
+        write_original_session_json(session_path, source_json if isinstance(source_json, bytes) else str(source_json))
+    return path
 
 
 async def apply_bulk_metadata_to_existing_sessions(state: FSMContext, metadata: dict, file_name: str | None) -> int:
@@ -1734,20 +1744,24 @@ def build_session_json_archive(products: list, output_dir: Path, batch_id: str) 
             label = unique_account_label(product, used_labels)
             try:
                 archive.write(session_file, f"{label}.session")
-                metadata = load_existing_session_metadata(session_file)
-                if not metadata:
-                    write_uploaded_session_metadata(session_file, {}, file_name=session_file.name)
+                original_json = session_original_json_path(session_file)
+                if original_json.exists():
+                    archive.write(original_json, f"{label}.json")
+                else:
                     metadata = load_existing_session_metadata(session_file)
-                metadata = normalize_session_metadata(
-                    metadata,
-                    default_api_id=settings.api_id,
-                    default_api_hash=settings.api_hash,
-                )
-                metadata["session_file"] = f"{label}.session"
-                archive.writestr(
-                    f"{label}.json",
-                    json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
-                )
+                    if not metadata:
+                        write_uploaded_session_metadata(session_file, {}, file_name=session_file.name)
+                        metadata = load_existing_session_metadata(session_file)
+                    metadata = normalize_session_metadata(
+                        metadata,
+                        default_api_id=settings.api_id,
+                        default_api_hash=settings.api_hash,
+                    )
+                    metadata["session_file"] = f"{label}.session"
+                    archive.writestr(
+                        f"{label}.json",
+                        json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
+                    )
                 added += 1
             except Exception as exc:
                 errors.append(f"{product['phone'] or product['product_id']}: {exc}")
