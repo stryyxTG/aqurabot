@@ -7252,9 +7252,20 @@ async def admin_add_password(message: Message, state: FSMContext):
         return
     
     if session_path:
-        metadata = data.get("single_session_metadata") or load_existing_session_metadata(session_path)
+        metadata = dict(data.get("single_session_metadata") or load_existing_session_metadata(session_path))
         metadata_password = str((metadata or {}).get("twofa_password") or "")
         twofa_password = metadata_password if password == "-" and metadata_password else ("" if password == "-" else password)
+        if twofa_password:
+            metadata["twofa_password"] = twofa_password
+        else:
+            metadata.pop("twofa_password", None)
+        write_session_metadata(
+            session_path,
+            metadata,
+            default_api_id=settings.api_id,
+            default_api_hash=settings.api_hash,
+            extra={"session_file": Path(session_path).name},
+        )
         await state.update_data(twofa_password=twofa_password)
         await prompt_admin_add_country(message, state, "Пароль сохранен.\n\nВыберите страну каталога для аккаунта.")
     else:
