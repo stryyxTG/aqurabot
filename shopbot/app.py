@@ -847,7 +847,7 @@ async def log_purchase(event_type: str, **data) -> None:
             f"⏰ <b>Товар возвращён в каталог</b>\n\n"
             f"🆔 <b>Товар:</b> #{data.get('product_id')}\n"
             f"📱 <b>Номер:</b> <code>{data.get('phone')}</code>\n"
-            f"👤 <b>Аккаунт:</b> {data.get('first_name')} (@{data.get('username')})\n"
+            f"👤 <b>Товар:</b> {data.get('first_name')} (@{data.get('username')})\n"
             f"🆔 <b>TG ID:</b> <code>{data.get('telegram_id')}</code>\n\n"
             f"{buyer_info}\n"
             f"⏱ <b>Причина:</b> не выполнен вход в течение 15 минут"
@@ -1490,7 +1490,7 @@ def product_admin_text(product) -> str:
     account_name = html.escape(product['first_name'] or product['username'] or '—')
     return (
         "<b>Карточка товара</b>\n\n"
-        f"<b>Аккаунт:</b> {account_name}\n"
+        f"<b>Товар:</b> {account_name}\n"
         f"<b>Название:</b> {render_rich_text(product['title'])}\n"
         f"{ICON_COUNTRY} <b>Страна:</b> {html.escape(product['country'])}\n"
         f"<b>Цена:</b> {fmt_money(float(product['price']))}\n"
@@ -1551,7 +1551,7 @@ async def notify_dead_product_to_admins(product, error: str, context: str) -> No
     username_raw = str(product["username"] or "").strip()
     username_text = f"@{html.escape(username_raw)}" if username_raw else "отсутствует"
     text = (
-        f"{ICON_NOTICE} <b>Мёртвый аккаунт при выдаче</b>\n\n"
+        f"{ICON_NOTICE} <b>Мёртвый товар при выдаче</b>\n\n"
         f"<b>Контекст:</b> {html.escape(context)}\n"
         f"<b>ID:</b> <code>{product['product_id']}</code>\n"
         f"<b>Товар:</b> {present(product['title'])}\n"
@@ -1910,7 +1910,7 @@ async def build_department_select_rows(country_id: int, country: str, flow_id: s
     return rows
 
 
-async def prompt_admin_add_country(message: Message, state: FSMContext, text: str = "Выберите страну каталога для аккаунта.") -> None:
+async def prompt_admin_add_country(message: Message, state: FSMContext, text: str = "Выберите страну каталога для товара.") -> None:
     flow_id = make_add_flow_id()
     country_rows = await build_country_select_rows(flow_id)
     if not country_rows:
@@ -1938,7 +1938,7 @@ def build_proxy_text() -> str:
     proxy = load_global_proxy()
     return (
         "<b>Прокси</b>\n\n"
-        "Используется для новых добавлений аккаунтов.\n\n"
+        "Используется для новых добавлений товаров.\n\n"
         f"<code>{html.escape(format_proxy_summary(proxy))}</code>"
     )
 
@@ -2145,7 +2145,7 @@ async def clean_confirm(query: CallbackQuery, state: FSMContext):
         query.message,
         f"{clean_stats_text(result)}\n\n"
         "<b>Подтвердите ручную очистку</b>\n\n"
-        "Бот подключится к серверным сессиям проданных товаров и выйдет из аккаунтов.\n"
+        "Бот подключится к серверным сессиям проданных товаров и завершит их Telegram-сессии.\n"
         "Будут удалены session-файлы.\n"
         "Товар будет полностью удалён из базы.\n"
         "Удалится связанная история покупки.\n"
@@ -2177,7 +2177,7 @@ async def clean_execute(query: CallbackQuery, state: FSMContext):
     await safe_edit(
         query.message,
         "<b>Очистка проданных сессий...</b>\n\n"
-        "Подключаюсь только к проданным товарам, выхожу из аккаунтов и удаляю серверные файлы.",
+        "Подключаюсь только к проданным товарам, завершаю их Telegram-сессии и удаляю серверные файлы.",
     )
 
     result = await scan_sold_sessions_for_clean()
@@ -2797,10 +2797,10 @@ async def service_confirm_action(query: CallbackQuery):
         await log_purchase("admin_action", action=f"Выдана заявка #{order_id}: {service_label}", admin_id=query.from_user.id)
         if order["service_type"] == "stars":
             title = "Звёзды выданы"
-            body = "Звёзды уже отправлены на указанный аккаунт."
+            body = "Звёзды уже отправлены на указанный товар."
         else:
             title = "Premium выдан"
-            body = "Подписка оформлена на указанный аккаунт."
+            body = "Подписка оформлена на указанный товар."
         try:
             await bot.send_message(
                 user_id,
@@ -3513,7 +3513,7 @@ async def cart_add_group(query: CallbackQuery):
         await query.answer(f"Добавлено в корзину: #{product_id}.")
         return
     if reason == "already_in_cart":
-        await query.answer("Все доступные аккаунты этого типа уже в корзине.", show_alert=True)
+        await query.answer("Все доступные товары этого типа уже в корзине.", show_alert=True)
         return
     if reason == "not_available":
         await query.answer("Этот тип товара закончился.", show_alert=True)
@@ -3548,7 +3548,7 @@ async def cart_add_group_quantity(query: CallbackQuery, state: FSMContext):
         return
     stock_count, in_cart_count, available_to_add = await get_department_cart_capacity(query.from_user.id, sample_product_id)
     if stock_count <= 0:
-        await query.answer("Все доступные аккаунты этого типа уже в корзине или закончились.", show_alert=True)
+        await query.answer("Все доступные товары этого типа уже в корзине или закончились.", show_alert=True)
         return
     if available_to_add <= 0:
         await query.answer("Вы уже добавили всё текущее наличие этого типа в корзину.", show_alert=True)
@@ -3584,7 +3584,7 @@ async def cart_add_group_quantity(query: CallbackQuery, state: FSMContext):
         )
         return
     if reason == "already_in_cart":
-        await query.answer("Все доступные аккаунты этого типа уже в корзине.", show_alert=True)
+        await query.answer("Все доступные товары этого типа уже в корзине.", show_alert=True)
         return
     if reason == "not_available":
         await query.answer("Этот тип товара закончился.", show_alert=True)
@@ -3606,7 +3606,7 @@ async def cart_add_group_manual_start(query: CallbackQuery, state: FSMContext):
         return
     stock_count, in_cart_count, available_to_add = await get_department_cart_capacity(query.from_user.id, sample_product_id)
     if stock_count <= 0:
-        await query.answer("Все доступные аккаунты этого типа уже в корзине или закончились.", show_alert=True)
+        await query.answer("Все доступные товары этого типа уже в корзине или закончились.", show_alert=True)
         return
     if available_to_add <= 0:
         await query.answer("Вы уже добавили всё текущее наличие этого типа в корзину.", show_alert=True)
@@ -3644,7 +3644,7 @@ async def cart_add_group_manual_finish(message: Message, state: FSMContext):
         available_to_add = min(available_to_add, max_qty)
     if stock_count <= 0:
         await state.clear()
-        await message.answer("Все доступные аккаунты этого типа уже в корзине или закончились.", reply_markup=back_to_main_kb(is_admin(message.from_user.id)))
+        await message.answer("Все доступные товары этого типа уже в корзине или закончились.", reply_markup=back_to_main_kb(is_admin(message.from_user.id)))
         return
     if available_to_add <= 0:
         await state.clear()
@@ -3678,7 +3678,7 @@ async def cart_add_group_manual_finish(message: Message, state: FSMContext):
         )
         return
     if reason == "already_in_cart":
-        await message.answer("Все доступные аккаунты этого типа уже в корзине.", reply_markup=back_to_main_kb(is_admin(message.from_user.id)))
+        await message.answer("Все доступные товары этого типа уже в корзине.", reply_markup=back_to_main_kb(is_admin(message.from_user.id)))
         return
     if reason == "not_available":
         await message.answer("Этот тип товара закончился.", reply_markup=back_to_main_kb(is_admin(message.from_user.id)))
@@ -3760,11 +3760,11 @@ async def cart_checkout(query: CallbackQuery):
             if removed_dead or unavailable_after_check:
                 await safe_edit(
                     query.message,
-                    f"{ICON_BLOCK} <b>Живых аккаунтов не осталось</b>\n\n"
+                    f"{ICON_BLOCK} <b>Живых товаров не осталось</b>\n\n"
                     f"Мёртвых позиций: <b>{len(removed_dead)}</b>\n"
                     f"Недоступных позиций: <b>{len(unavailable_after_check)}</b>\n"
                     f"К возврату/не списано: <b>{fmt_money(removed_dead_total)}</b>\n\n"
-                    "Деньги за них не списались. По мёртвым аккаунтам админы уже получили уведомление.",
+                    "Деньги за них не списались. По мёртвым товарам админы уже получили уведомление.",
                     back_to_main_kb(is_admin(query.from_user.id)),
                 )
             else:
@@ -3829,7 +3829,7 @@ async def cart_checkout(query: CallbackQuery):
             f"Списано: <b>{fmt_money(result.total)}</b>\n"
             f"{skipped_text}"
             f"{ICON_COIN} Новый баланс: <b>{fmt_money(result.balance)}</b>\n\n"
-            "Выберите формат получения аккаунтов. К0d по каждому аккаунту можно получить в <b>Моих покупках</b> внутри этого заказа.",
+            "Выберите формат получения товаров. К0d по каждому товару можно получить в <b>Моих покупках</b> внутри этого заказа.",
             purchase_batch_kb(batch_id=result.batch_id, page=0, account_rows=account_rows, can_bulk_download=True),
         )
         return
@@ -3877,7 +3877,7 @@ async def menu_purchases(query: CallbackQuery):
         title = group["first_title"] or "Аkkаунт"
         phone = group["first_phone"] or "—"
         if count > 1:
-            label = f"{count} аккаунтов • {short_date(group['created_at'])} • {fmt_money(float(group['total_price']))}"
+            label = f"{count} товаров • {short_date(group['created_at'])} • {fmt_money(float(group['total_price']))}"
         else:
             label = f"{title} • {phone} • {short_date(group['created_at'])}"
         rows.append([
@@ -3929,9 +3929,9 @@ async def purchase_batch_detail(query: CallbackQuery):
     text = (
         f"{ICON_SPARKLE} <b>Заказ</b>\n\n"
         f"Дата: <b>{date}</b>\n"
-        f"Аккаунтов: <b>{len(purchases)}</b>\n"
+        f"Товаров: <b>{len(purchases)}</b>\n"
         f"Сумма: <b>{fmt_money(total)}</b>\n\n"
-        "Выберите аккаунт:"
+        "Выберите товар:"
     )
     await safe_edit(
         query.message,
@@ -4009,9 +4009,9 @@ async def _render_product_list(query: CallbackQuery, *, country_id: int | None, 
             )
         ])
     if country:
-        text = f"{ICON_COUNTRY} <b>Страна:</b> {html.escape(country)}\n\n{ICON_TAG} <b>Аккаунтов:</b> {total_accounts}"
+        text = f"{ICON_COUNTRY} <b>Страна:</b> {html.escape(country)}\n\n{ICON_TAG} <b>Товаров:</b> {total_accounts}"
     else:
-        text = f"<b>Все товары</b>\n\n{ICON_TAG} <b>Аккаунтов:</b> {total_accounts}"
+        text = f"<b>Все товары</b>\n\n{ICON_TAG} <b>Товаров:</b> {total_accounts}"
     prefix = "catalog_all" if country_id is None else f"catalog_country:{country_id}:"
     await safe_edit(query.message, text, product_list_kb(prefix=prefix, product_rows=rows, page=page, total_pages=total_pages, back_callback="catalog_accounts"))
 
@@ -4106,7 +4106,7 @@ async def render_group_cart_picker(
     if available_to_add <= 0:
         await safe_edit(
             query.message,
-            product_group_public_text(group) + "\n\nВсе доступные аккаунты уже в корзине или закончились.",
+            product_group_public_text(group) + "\n\nВсе доступные товары уже в корзине или закончились.",
             product_group_detail_kb(sample_product_id, can_buy=False, back_callback=back_callback),
         )
         return
@@ -4395,9 +4395,9 @@ async def batch_download_ask(query: CallbackQuery):
 
     fmt = "session+json ZIP" if file_type == "session" else "tdata ZIP"
     text = (
-        f"{ICON_FOLDER} <b>Скачать аккаунты?</b>\n\n"
+        f"{ICON_FOLDER} <b>Скачать товары?</b>\n\n"
         f"Формат: <b>{html.escape(fmt)}</b>\n"
-        f"Аккаунтов: <b>{len(downloadable)}</b>\n\n"
+        f"Товаров: <b>{len(downloadable)}</b>\n\n"
         "Бот подготовит и отправит один ZIP-архив."
     )
     await safe_edit(query.message, text, batch_download_confirm_kb(batch_id, page, file_type))
@@ -4427,7 +4427,7 @@ async def batch_download(query: CallbackQuery):
         query.message,
         f"{ICON_FOLDER} <b>Готовлю архив</b>\n\n"
         f"Формат: <b>{html.escape('session+json ZIP' if file_type == 'session' else 'tdata ZIP')}</b>\n"
-        f"Аккаунтов: <b>{len(downloadable)}</b>",
+        f"Товаров: <b>{len(downloadable)}</b>",
         purchase_batch_kb(batch_id=batch_id, page=page, can_bulk_download=True),
     )
 
@@ -4449,9 +4449,9 @@ async def batch_download(query: CallbackQuery):
             return
 
         caption = (
-            f"{ICON_FOLDER} <b>Архив аккаунтов</b>\n\n"
+            f"{ICON_FOLDER} <b>Архив товаров</b>\n\n"
             f"Формат: <b>{html.escape(caption_format)}</b>\n"
-            f"Аккаунтов в заказе: <b>{len(downloadable)}</b>"
+            f"Товаров в заказе: <b>{len(downloadable)}</b>"
         )
         if errors:
             caption += "\n\nПропущено:\n" + "\n".join(f"  • {html.escape(error)}" for error in errors[:5])
@@ -4465,7 +4465,7 @@ async def batch_download(query: CallbackQuery):
     await safe_edit(
         query.message,
         f"{ICON_SUCCESS} <b>Архив отправлен</b>\n\n"
-        "К0d по каждому аккаунту можно получить в списке заказа ниже.",
+        "К0d по каждому товару можно получить в списке заказа ниже.",
         purchase_batch_kb(batch_id=batch_id, page=page, account_rows=[
             [
                 inline_button(
@@ -4528,8 +4528,8 @@ async def product_group_buy(query: CallbackQuery):
     if not result or not product:
         await safe_edit(
             query.message,
-            f"{ICON_BLOCK} <b>Нет живых аккаунтов</b>\n\n"
-            "Я проверил доступные аккаунты этого отдела, но живых для выдачи сейчас нет. Админы уже получили уведомления по проблемным аккаунтам.",
+            f"{ICON_BLOCK} <b>Нет живых товаров</b>\n\n"
+            "Я проверил доступные товары этого отдела, но живых для выдачи сейчас нет. Админы уже получили уведомления по проблемным товарам.",
             back_to_main_kb(is_admin(query.from_user.id)),
         )
         return
@@ -4575,8 +4575,8 @@ async def product_buy(query: CallbackQuery):
     if not await verify_product_alive_for_sale(candidate, context=f"Покупка конкретного товара пользователем {query.from_user.id}"):
         await safe_edit(
             query.message,
-            f"{ICON_BLOCK} <b>Аккаунт снят с продажи</b>\n\n"
-            "Перед выдачей проверил аккаунт, он оказался мёртвым. Админы уже получили уведомление, деньги не списаны.",
+            f"{ICON_BLOCK} <b>Товар снят с продажи</b>\n\n"
+            "Перед выдачей проверил товар, он оказался мёртвым. Админы уже получили уведомление, деньги не списаны.",
             back_to_main_kb(is_admin(query.from_user.id)),
         )
         return
@@ -4651,18 +4651,18 @@ async def admin_verify_account(query: CallbackQuery):
         
         if result["alive"]:
             status_text = (
-                f"<b>Аккаунт живой</b>\n\n"
+                f"<b>Товар живой</b>\n\n"
                 f"User ID: <code>{result['user_id']}</code>\n"
                 f"Телефон: <code>{result['phone']}</code>\n"
                 f"Username: <b>{result['username']}</b>"
             )
         else:
-            status_text = f"<b>Аккаунт не прошел проверку</b>\n\n{result['error']}"
+            status_text = f"<b>Товар не прошел проверку</b>\n\n{result['error']}"
         
         await safe_edit(query.message, status_text, admin_product_detail_kb(product_id))
     
     except Exception as e:
-        logger.exception("Ошибка при проверке аккаунта")
+        logger.exception("Ошибка при проверке товара")
         await query.answer(f"Ошибка: {str(e)}", show_alert=True)
 
 
@@ -4712,7 +4712,7 @@ async def admin_scan_interval_custom(query: CallbackQuery, state: FSMContext):
     await state.set_state(AdminScanStates.waiting_interval)
     await safe_edit(
         query.message,
-        "<b>Интервал проверки</b>\n\nВведите задержку между аккаунтами в секундах.\nМинимум: <b>20</b>, максимум: <b>600</b>.",
+        "<b>Интервал проверки</b>\n\nВведите задержку между товарами в секундах.\nМинимум: <b>20</b>, максимум: <b>600</b>.",
         cancel_flow_kb("admin_scan_accounts"),
     )
 
@@ -4734,9 +4734,9 @@ async def admin_scan_interval_message(message: Message, state: FSMContext):
     data = await state.get_data()
     limit = int(data.get("scan_limit") or 5)
     await message.answer(
-        "<b>Глубокая проверка аккаунтов</b>\n\n"
+        "<b>Глубокая проверка товаров</b>\n\n"
         f"<b>Интервал:</b> {interval} сек\n"
-        f"<b>Лимит:</b> {limit} аккаунтов за запуск",
+        f"<b>Лимит:</b> {limit} товаров за запуск",
         reply_markup=admin_scan_settings_kb(interval, limit),
     )
 
@@ -4749,7 +4749,7 @@ async def admin_scan_limit_custom(query: CallbackQuery, state: FSMContext):
     await state.set_state(AdminScanStates.waiting_limit)
     await safe_edit(
         query.message,
-        "<b>Лимит проверки</b>\n\nВведите сколько аккаунтов проверить за один запуск.\nМинимум: <b>1</b>, максимум: <b>20</b>.",
+        "<b>Лимит проверки</b>\n\nВведите сколько товаров проверить за один запуск.\nМинимум: <b>1</b>, максимум: <b>20</b>.",
         cancel_flow_kb("admin_scan_accounts"),
     )
 
@@ -4761,19 +4761,19 @@ async def admin_scan_limit_message(message: Message, state: FSMContext):
     try:
         limit = int((message.text or "").strip())
     except ValueError:
-        await message.answer("Введите число аккаунтов.")
+        await message.answer("Введите число товаров.")
         return
     if limit < 1 or limit > 20:
-        await message.answer("Лимит должен быть от 1 до 20 аккаунтов.")
+        await message.answer("Лимит должен быть от 1 до 20 товаров.")
         return
     await state.update_data(scan_limit=limit)
     await state.set_state(None)
     data = await state.get_data()
     interval = int(data.get("scan_interval") or 60)
     await message.answer(
-        "<b>Глубокая проверка аккаунтов</b>\n\n"
+        "<b>Глубокая проверка товаров</b>\n\n"
         f"<b>Интервал:</b> {interval} сек\n"
-        f"<b>Лимит:</b> {limit} аккаунтов за запуск",
+        f"<b>Лимит:</b> {limit} товаров за запуск",
         reply_markup=admin_scan_settings_kb(interval, limit),
     )
 
@@ -4792,7 +4792,7 @@ async def admin_scan_confirm(query: CallbackQuery, state: FSMContext):
         "Бот будет по очереди подключаться к сеccuям аkkаунTов. "
         "Это не локальный скан файлов, поэтому запускать нужно осторожно.\n\n"
         f"<b>Интервал:</b> {interval} сек\n"
-        f"<b>Лимит:</b> {limit} аккаунтов",
+        f"<b>Лимит:</b> {limit} товаров",
         admin_scan_confirm_kb(),
     )
 
@@ -4808,7 +4808,7 @@ async def admin_scan_start(query: CallbackQuery, state: FSMContext):
     status_msg = query.message
     await safe_edit(
         status_msg,
-        "<b>Глубокая проверка аккаунтов</b>\n\n"
+        "<b>Глубокая проверка товаров</b>\n\n"
         "Запускаю осторожную проверку. Не закрывайте бот до завершения.",
     )
 
@@ -4820,12 +4820,12 @@ async def admin_scan_start(query: CallbackQuery, state: FSMContext):
     for idx, p in enumerate(products, 1):
         await safe_edit(
             status_msg,
-            f"<b>Глубокая проверка аккаунтов</b>\n\n"
+            f"<b>Глубокая проверка товаров</b>\n\n"
             f"Проверяю: <b>{idx}/{total}</b>\n"
             f"Товар: <code>#{p['product_id']}</code>\n"
             f"Успешно: <b>{success}</b>\n"
             f"Ошибок: <b>{len(failed_data)}</b>\n\n"
-            f"Интервал между аккаунтами: <b>{interval} сек</b>",
+            f"Интервал между товарами: <b>{interval} сек</b>",
         )
         res = await session_manager.verify_account_alive(p["product_id"])
         if res.get("alive"):
@@ -5151,7 +5151,7 @@ async def admin_claim_ask(query: CallbackQuery):
         await query.answer("Товар не найден.", show_alert=True)
         return
     if product["status"] not in {"available", "waiting_code"}:
-        await query.answer("Этот аккаунт уже не в наличии.", show_alert=True)
+        await query.answer("Этот товар уже не в наличии.", show_alert=True)
         return
     back_callback = "admin_home" if query.data.endswith(":admin") else "admin_stock_product:%s" % product_id
     text = (
@@ -5181,14 +5181,14 @@ async def admin_claim_product(query: CallbackQuery):
         await query.answer("Товар не найден.", show_alert=True)
         return
     if product["status"] not in {"available", "waiting_code"}:
-        await query.answer("Этот аккаунт уже не в наличии.", show_alert=True)
+        await query.answer("Этот товар уже не в наличии.", show_alert=True)
         return
     if not await claim_product_for_admin(query.from_user.id, product_id):
-        await query.answer("Не удалось забрать аккаунт.", show_alert=True)
+        await query.answer("Не удалось забрать товар.", show_alert=True)
         return
     product = await get_product(product_id)
-    await log_purchase("admin_action", action=f"Админ забрал аккаунт #{product_id} ({product['phone']})", admin_id=query.from_user.id)
-    await safe_edit(query.message, "Аккаунт забран со склада.\n\n" + product_admin_text(product), back_to_main_kb(True))
+    await log_purchase("admin_action", action=f"Админ забрал товар #{product_id} ({product['phone']})", admin_id=query.from_user.id)
+    await safe_edit(query.message, "Товар забран со склада.\n\n" + product_admin_text(product), back_to_main_kb(True))
 
 @dp.callback_query(F.data == "admin_home")
 async def admin_home(query: CallbackQuery):
@@ -5326,7 +5326,7 @@ async def admin_stats(query: CallbackQuery):
         f"Ожидают к0d: <b>{stats.get('waiting', 0)}</b>\n"
         f"Продано: <b>{stats['sold']}</b>\n"
         f"Выручка: <b>{fmt_money(stats['revenue'])}</b>\n"
-        f"Аккаунты: <b>{fmt_money(stats.get('accounts_revenue', 0))}</b>\n"
+        f"Товары: <b>{fmt_money(stats.get('accounts_revenue', 0))}</b>\n"
         f"Услуги: <b>{fmt_money(stats.get('services_revenue', 0))}</b>"
     )
     await safe_edit(query.message, text, admin_stats_kb())
@@ -5407,7 +5407,7 @@ async def admin_reset_revenue_confirm(query: CallbackQuery):
         "<b>Выручка сброшена</b>\n\n"
         f"<b>Сумма склада:</b> {fmt_money(stats['stock_value'])}\n"
         f"Выручка: <b>{fmt_money(stats['revenue'])}</b>\n"
-        f"Аккаунты: <b>{fmt_money(stats.get('accounts_revenue', 0))}</b>\n"
+        f"Товары: <b>{fmt_money(stats.get('accounts_revenue', 0))}</b>\n"
         f"Услуги: <b>{fmt_money(stats.get('services_revenue', 0))}</b>\n"
         f"Считается с: <code>{html.escape(reset_at[:19])}</code>"
     )
@@ -5456,7 +5456,7 @@ async def admin_catalog(query: CallbackQuery):
     text = (
         "<b>Страны каталога</b>\n\n"
         "Эти страны показываются в каталоге отдельными кнопками. "
-        "При добавлении аккаунта товар можно положить в одну из них."
+        "При добавлении новый товар можно положить в одну из них."
     )
     await safe_edit(query.message, text, admin_catalog_kb(await build_admin_country_rows()))
 
@@ -5483,7 +5483,7 @@ async def render_admin_country(message: Message, country_id: int) -> None:
         f"Название: <b>{html.escape(country['name'])}</b>\n"
         f"<b>Premium-флаг:</b> <code>{html.escape(country['icon_custom_emoji_id'] or 'не задан')}</code>\n"
         f"<b>В наличии:</b> {total}\n"
-        f"<b>Типов товара:</b> {len(groups)}"
+        f"<b>Типов товаров:</b> {len(groups)}"
     )
     await safe_edit(message, text, admin_country_kb(country_id, group_rows))
 
@@ -5654,9 +5654,9 @@ async def admin_product_group_view(query: CallbackQuery):
         ])
     text = product_group_admin_text(group)
     if total_accounts:
-        text += f"\n\n<b>Аккаунты отдела:</b> {total_accounts}"
+        text += f"\n\n<b>Товары отдела:</b> {total_accounts}"
     else:
-        text += "\n\n<b>Аккаунтов в отделе:</b> 0"
+        text += "\n\n<b>Товаров в отделе:</b> 0"
     await safe_edit(
         query.message,
         text,
@@ -5724,7 +5724,7 @@ async def admin_remove_group_ask(query: CallbackQuery):
             f"<b>Название:</b> {render_rich_text(group['title'])}\n"
             f"{ICON_COUNTRY} <b>Страна:</b> {html.escape(group['country'])}\n"
             f"<b>В наличии:</b> {int(group['stock_count'] or 0)}\n\n"
-            "Сначала продайте, перенесите или снимите с продажи все аккаунты этого отдела."
+            "Сначала продайте, перенесите или снимите с продажи все товары этого отдела."
         )
         await safe_edit(query.message, text, admin_product_group_kb(sample_product_id, country_id))
         return
@@ -5734,8 +5734,8 @@ async def admin_remove_group_ask(query: CallbackQuery):
         f"{ICON_COUNTRY} <b>Страна:</b> {html.escape(group['country'])}\n"
         f"<b>Цена:</b> {fmt_money(float(group['price']))}\n"
         f"<b>В наличии:</b> {int(group['stock_count'] or 0)}\n"
-        f"<b>Всего аккаунтов:</b> {int(group['total_count'] or 0)}\n\n"
-        "Отдел пропадёт из каталога и админского списка страны. Купленные аккаунты и история покупателей останутся."
+        f"<b>Всего товаров:</b> {int(group['total_count'] or 0)}\n\n"
+        "Отдел пропадёт из каталога и админского списка страны. Купленные товары и история покупателей останутся."
     )
     await safe_edit(query.message, text, admin_product_group_remove_confirm_kb(sample_product_id, country_id))
 
@@ -5756,7 +5756,7 @@ async def admin_remove_group(query: CallbackQuery):
     result = await remove_product_department(sample_product_id, query.from_user.id)
     if not result.get("ok"):
         if result.get("reason") == "has_available":
-            await query.answer("Нельзя удалить отдел, пока в нём есть аккаунты в наличии.", show_alert=True)
+            await query.answer("Нельзя удалить отдел, пока в нём есть товары в наличии.", show_alert=True)
             return
         await query.answer("Отдел не найден.", show_alert=True)
         return
@@ -5774,7 +5774,7 @@ async def admin_remove_group(query: CallbackQuery):
         f"<b>Название:</b> {render_rich_text(result['title'])}\n"
         f"{ICON_COUNTRY} <b>Страна:</b> {html.escape(str(result['country']))}\n"
         f"<b>Цена:</b> {fmt_money(float(result['price']))}\n"
-        f"<b>Аккаунтов в отделе:</b> {int(result['total'])}\n"
+        f"<b>Товаров в отделе:</b> {int(result['total'])}\n"
         f"<b>Из корзин убрано:</b> {int(result['cart_removed'])}"
     )
     await safe_edit(
@@ -5843,12 +5843,12 @@ async def admin_edit_group_new_value(message: Message, state: FSMContext):
     await log_purchase("admin_action", action=f"Обновлен тип товара sample #{sample_product_id}, поле {field}, товаров: {changed}", admin_id=message.from_user.id)
     if group:
         await message.answer(
-            f"Обновлено аккаунтов: <b>{changed}</b>\n\n" + product_group_admin_text(group),
+            f"Обновлено товаров: <b>{changed}</b>\n\n" + product_group_admin_text(group),
             reply_markup=admin_product_group_kb(int(group["sample_product_id"]), country_id),
         )
     else:
         await message.answer(
-            f"Обновлено аккаунтов: <b>{changed}</b>",
+            f"Обновлено товаров: <b>{changed}</b>",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="К стране", callback_data=f"admin_country:{country_id}")]]),
         )
 
@@ -5985,7 +5985,7 @@ async def admin_country_remove_ask(query: CallbackQuery):
             "<b>Страну нельзя удалить</b>\n\n"
             f"{ICON_COUNTRY} <b>Страна:</b> {html.escape(country['name'])}\n"
             f"<b>В наличии:</b> {total}\n\n"
-            "Сначала продайте, перенесите или снимите с продажи все аккаунты этой страны."
+            "Сначала продайте, перенесите или снимите с продажи все товары этой страны."
         )
         await safe_edit(query.message, text, admin_country_kb(country_id))
         return
@@ -6009,7 +6009,7 @@ async def admin_country_remove(query: CallbackQuery):
     if country:
         total = await count_products(country=country["name"])
         if total > 0:
-            await query.answer("Нельзя удалить страну, пока в ней есть аккаунты в наличии.", show_alert=True)
+            await query.answer("Нельзя удалить страну, пока в ней есть товары в наличии.", show_alert=True)
             await admin_country_view(query)
             return
     if await remove_catalog_country(country_id):
@@ -6434,7 +6434,7 @@ async def admin_terminate_sessions_ask(query: CallbackQuery):
         "<b>Завершить с3ccuu?</b>\n\n"
         f"{ICON_PURCHASE_TAG} <b>Товар:</b> {render_rich_text(product['title'])}\n"
         f"<b>Телефон:</b> <code>{html.escape(product['phone'] or '—')}</code>\n\n"
-        "Бот завершит все активные с3ccuu аккаунта, кроме своей серверной с3ccuu.\n\n"
+        "Бот завершит все активные с3ccuu этого товара, кроме своей серверной с3ccuu.\n\n"
         f"{ICON_NOTICE} Это действие нельзя отменить."
     )
     await safe_edit(query.message, text, admin_terminate_sessions_step1_kb(product_id))
@@ -6755,7 +6755,7 @@ async def admin_add_by_phone(query: CallbackQuery, state: FSMContext):
         query.message,
         "<b>Добавление по номеру телефона</b>\n\n"
         f"Текущий общий прокси:\n<code>{html.escape(format_proxy_summary(current_proxy))}</code>\n\n"
-        "Отправь номер телефона аккаунта.\nФормат: <code>+998901234567</code>",
+        "Отправь номер телефона товара.\nФормат: <code>+998901234567</code>",
         cancel_flow_kb("admin_home"),
     )
 
@@ -6783,7 +6783,7 @@ async def admin_add_by_session(query: CallbackQuery, state: FSMContext):
         query.message,
         "<b>Добавление по .session файлам</b>\n\n"
         "Отправляй .session, .json или .zip с парами session/json.\n\n"
-        "Можно загрузить один аккаунт или сразу пачку.\n\n"
+        "Можно загрузить один товар или сразу пачку.\n\n"
         "Когда загрузите все файлы, нажмите <b>Готово</b>.",
         kb
     )
@@ -6969,7 +6969,7 @@ async def bulk_sessions_done(query: CallbackQuery, state: FSMContext):
             state,
             f"Загружено сессий: {len(bulk_sessions)}.\n\n"
             "JSON найден для каждой сессии, общий 2FA не нужен.\n"
-            "Если в JSON нет пароля, для этого аккаунта считается, что 2FA нет.\n\n"
+            "Если в JSON нет пароля, для этого товара считается, что 2FA нет.\n\n"
             "Выберите страну каталога для этих сессий.",
         )
         return
@@ -7038,7 +7038,7 @@ async def admin_add_session_file(message: Message, state: FSMContext):
             await state.update_data(single_session_metadata=metadata)
             await message.answer(
                 "JSON принят.\n\n"
-                "Теперь отправьте .session для этого аккаунта.",
+                "Теперь отправьте .session для этого товара.",
                 reply_markup=cancel_flow_kb("admin_home")
             )
             return
@@ -7130,7 +7130,7 @@ async def submit_admin_login_code(target: Message | CallbackQuery, state: FSMCon
         return
     me = result["me"]
     await state.update_data(telegram_id=int(me.id), username=me.username or "", first_name=me.first_name or "User", phone=getattr(me, "phone", "") or "", twofa_password="")
-    await prompt_admin_add_country(status_message, state, "Сеccuя подключена.\n\nВыберите страну каталога для аккаунта.")
+    await prompt_admin_add_country(status_message, state, "Сеccuя подключена.\n\nВыберите страну каталога для товара.")
 
 
 @dp.callback_query(F.data.startswith("code_digit:"))
@@ -7237,7 +7237,7 @@ async def admin_add_password(message: Message, state: FSMContext):
             extra={"session_file": Path(session_path).name},
         )
         await state.update_data(twofa_password=twofa_password)
-        await prompt_admin_add_country(message, state, "Пароль сохранен.\n\nВыберите страну каталога для аккаунта.")
+        await prompt_admin_add_country(message, state, "Пароль сохранен.\n\nВыберите страну каталога для товара.")
     else:
         # Это обычное добавление по номеру - проверяем пароль
         progress = await message.answer("Проверяю пароль 2FA...")
@@ -7256,7 +7256,7 @@ async def admin_add_password(message: Message, state: FSMContext):
             return
         await state.set_state(AdminAddProductStates.waiting_country)
         await state.update_data(add_flow_id=flow_id)
-        await progress.edit_text("2FA принята.\n\nВыберите страну каталога для аккаунта.", reply_markup=country_select_kb(country_rows))
+        await progress.edit_text("2FA принята.\n\nВыберите страну каталога для товара.", reply_markup=country_select_kb(country_rows))
 
 
 @dp.message(AdminAddProductStates.waiting_title)
@@ -7310,7 +7310,7 @@ async def admin_add_department_back(query: CallbackQuery, state: FSMContext):
         return
     await query.answer()
     await state.set_state(AdminAddProductStates.waiting_country)
-    await safe_edit(query.message, "Выберите страну каталога для аккаунта.", country_select_kb(await build_country_select_rows(flow_id)))
+    await safe_edit(query.message, "Выберите страну каталога для товара.", country_select_kb(await build_country_select_rows(flow_id)))
 
 
 @dp.callback_query(F.data.startswith("add_department_new"))
@@ -7459,7 +7459,7 @@ async def finish_admin_add_products(message: Message, state: FSMContext, admin_i
                 await session_manager.cleanup(admin_id)
                 await message.answer(
                     f"Сессия невалидна и не принята:\n\n{html.escape(str(error))}\n\n"
-                    "Аккаунт не добавлен в магазин.",
+                    "Товар не добавлен в магазин.",
                     reply_markup=admin_home_kb()
                 )
                 return
@@ -7483,7 +7483,7 @@ async def finish_admin_add_products(message: Message, state: FSMContext, admin_i
             await update_product_session_path(product_id, str(final_session))
 
         if not uploaded_alive_check:
-            await message.answer("Проверяю аккаунт...")
+            await message.answer("Проверяю товар...")
             alive_check = await session_manager.verify_account_alive(product_id)
 
             if not alive_check.get("alive"):
@@ -7492,7 +7492,7 @@ async def finish_admin_add_products(message: Message, state: FSMContext, admin_i
                 await state.clear()
                 await session_manager.cleanup(admin_id)
                 await message.answer(
-                    f"Аккаунт не прошел проверку:\n\n{error}\n\n"
+                    f"Товар не прошел проверку:\n\n{error}\n\n"
                     f"Товар не добавлен в магазин.",
                     reply_markup=admin_home_kb()
                 )
@@ -7515,7 +7515,7 @@ async def finish_admin_add_products(message: Message, state: FSMContext, admin_i
     await state.clear()
     product = await get_product(product_id)
     await message.answer(
-        "Аккаунт проверен и добавлен в магазин.\n\n" + product_admin_text(product),
+        "Товар проверен и добавлен в магазин.\n\n" + product_admin_text(product),
         reply_markup=admin_home_kb()
     )
 

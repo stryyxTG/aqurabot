@@ -185,7 +185,7 @@ class ShopSessionManager:
             "unknown location",
             # Русские маркеры
             "новый вход",
-            "вход в аккаунт",
+            "вход в Telegram",
             "вход с нового",
             "обнаружили вход",
             "новая сессия",
@@ -397,7 +397,7 @@ class ShopSessionManager:
             
             logger.info(f"[product={product_id}] Ищу k0dы с {five_minutes_ago.isoformat()}")
             
-            # Ищем диалог с Telegram (служебный аккаунт)
+            # Ищем служебный диалог с Telegram.
             target_dialog = None
             async for dialog in client.iter_dialogs():
                 entity = dialog.entity
@@ -507,7 +507,7 @@ class ShopSessionManager:
             result = await client(auth_request)
             
             sessions_total = len(result.authorizations) if hasattr(result, 'authorizations') else 0
-            logger.info(f"[product={product_id}] Всего сессий в аккаунте: {sessions_total}")
+            logger.info(f"[product={product_id}] Всего активных сессий: {sessions_total}")
             
             for idx, session in enumerate(result.authorizations, 1):
                 session_date = session.date_created
@@ -538,7 +538,7 @@ class ShopSessionManager:
             logger.warning(f"[product={product_id}] === НОВАЯ СЕССИЯ НЕ НАЙДЕНА ===")
             logger.warning(f"[product={product_id}] Проверено {sessions_total} сессий, ни одна не соответствует критериям")
             logger.warning(f"[product={product_id}] Нужно найти сессию, созданную ПОСЛЕ: {search_since_dt.isoformat()}")
-            return {"confirmed": False, "error": "Новая сессия в аккаунте не обнаружена"}
+            return {"confirmed": False, "error": "Новая сессия не обнаружена"}
         except Exception as e:
             logger.exception(f"[product={product_id}] Ошибка при проверке сессий: {e}")
             return {"confirmed": False, "error": str(e) or type(e).__name__}
@@ -550,7 +550,7 @@ class ShopSessionManager:
 
     async def verify_account_alive(self, product_id: int) -> dict:
         """
-        Проверяет живой ли аккаунт:
+        Проверяет живой ли товар:
         - Может ли мы к нему подключиться
         - Авторизован ли он
         - Получаем инфо о профиле
@@ -566,7 +566,7 @@ class ShopSessionManager:
             await self._connect_with_backoff(client, max_retries=1)
             
             if not await client.is_user_authorized():
-                return {"alive": False, "error": "Аккаунт не авторизован"}
+                return {"alive": False, "error": "Товар не авторизован"}
             
             # Получаем инфо о пользователе
             me = await client.get_me()
@@ -600,7 +600,7 @@ class ShopSessionManager:
         try:
             await self._connect_with_backoff(client, max_retries=1)
             if not await client.is_user_authorized():
-                return {"alive": False, "error": "Аккаунт не авторизован"}
+                return {"alive": False, "error": "Товар не авторизован"}
 
             me = await client.get_me()
             return {

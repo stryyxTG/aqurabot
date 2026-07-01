@@ -412,7 +412,7 @@ def admin_home_kb() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="Страны каталога", callback_data="admin_catalog")],
             [InlineKeyboardButton(text="Застрявшие товары", callback_data="admin_stuck_products")],
             [InlineKeyboardButton(text="История продаж", callback_data="admin_stock_sold_list")],
-            [InlineKeyboardButton(text="Скан аккаунтов", callback_data="admin_scan_accounts")],
+            [InlineKeyboardButton(text="Скан товаров", callback_data="admin_scan_accounts")],
             [InlineKeyboardButton(text="Рассылка", callback_data="admin_broadcast")],
             [InlineKeyboardButton(text="В меню", callback_data="menu_home", icon_custom_emoji_id=BTN_ICON_HOME)],
         ]
@@ -476,9 +476,9 @@ def admin_scan_settings_kb(interval: int, limit: int) -> InlineKeyboardMarkup:
             ],
             [InlineKeyboardButton(text=f"Свой интервал: {interval} сек", callback_data="admin_scan_interval_custom")],
             [
-                InlineKeyboardButton(text="3 акка", callback_data="admin_scan_limit:3"),
-                InlineKeyboardButton(text="5 акков", callback_data="admin_scan_limit:5"),
-                InlineKeyboardButton(text="10 акков", callback_data="admin_scan_limit:10"),
+                InlineKeyboardButton(text="3 товара", callback_data="admin_scan_limit:3"),
+                InlineKeyboardButton(text="5 товаров", callback_data="admin_scan_limit:5"),
+                InlineKeyboardButton(text="10 товаров", callback_data="admin_scan_limit:10"),
             ],
             [InlineKeyboardButton(text=f"Свой лимит: {limit}", callback_data="admin_scan_limit_custom")],
             [InlineKeyboardButton(text="Начать глубокую проверку", callback_data="admin_scan_confirm")],
@@ -713,7 +713,7 @@ def admin_product_detail_kb(
     can_fetch_code: bool = False,
 ) -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton(text="Проверить аккаунт", callback_data=f"admin_verify_account:{product_id}")],
+        [InlineKeyboardButton(text="Проверить товар", callback_data=f"admin_verify_account:{product_id}")],
         [InlineKeyboardButton(text="Редактировать", callback_data=f"admin_edit_product:{product_id}")],
         [
             InlineKeyboardButton(text=".session", callback_data=f"admin_download_session:{product_id}"),
