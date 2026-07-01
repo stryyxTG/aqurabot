@@ -4684,6 +4684,7 @@ async def admin_verify_account(query: CallbackQuery):
         
         has_session = has_server_session(product)
         can_fetch_code = has_session and product["status"] in {"waiting_code", "verifying", "sold"}
+        can_claim = product["status"] in {"available", "waiting_code"}
         await safe_edit(
             query.message,
             status_text,
@@ -4692,6 +4693,7 @@ async def admin_verify_account(query: CallbackQuery):
                 back_callback=back_callback,
                 can_terminate_sessions=has_session,
                 can_fetch_code=can_fetch_code,
+                can_claim=can_claim,
             ),
         )
     
@@ -4991,6 +4993,7 @@ async def admin_product_search_process(message: Message, state: FSMContext):
         product = products[0]
         has_session = has_server_session(product)
         can_fetch_code = has_session and product["status"] in {"waiting_code", "verifying", "sold"}
+        can_claim = product["status"] in {"available", "waiting_code"}
         await message.answer(
             product_admin_text(product),
             reply_markup=admin_product_detail_kb(
@@ -4998,6 +5001,7 @@ async def admin_product_search_process(message: Message, state: FSMContext):
                 back_callback="admin_product_search",
                 can_terminate_sessions=has_session,
                 can_fetch_code=can_fetch_code,
+                can_claim=can_claim,
             ),
         )
         return
@@ -6466,6 +6470,7 @@ async def admin_stock_product_detail(query: CallbackQuery):
 
     has_session = has_server_session(product)
     can_fetch_code = has_session and product["status"] in {"waiting_code", "verifying", "sold"}
+    can_claim = product["status"] in {"available", "waiting_code"}
     await safe_edit(
         query.message,
         product_admin_text(product),
@@ -6474,6 +6479,7 @@ async def admin_stock_product_detail(query: CallbackQuery):
             back_callback=back_callback,
             can_terminate_sessions=has_session,
             can_fetch_code=can_fetch_code,
+            can_claim=can_claim,
         ),
     )
 
@@ -6515,6 +6521,7 @@ async def admin_get_code(query: CallbackQuery):
                 back_callback=f"admin_stock_product:{product_id}",
                 can_terminate_sessions=has_server_session(product),
                 can_fetch_code=has_server_session(product),
+                can_claim=product["status"] in {"available", "waiting_code"},
             ),
         )
         return
@@ -6536,6 +6543,7 @@ async def admin_get_code(query: CallbackQuery):
             back_callback=f"admin_stock_product:{product_id}",
             can_terminate_sessions=has_server_session(product),
             can_fetch_code=has_server_session(product),
+            can_claim=product["status"] in {"available", "waiting_code"},
         ),
     )
 
@@ -6614,6 +6622,7 @@ async def admin_terminate_sessions_confirm(query: CallbackQuery):
                 back_callback=f"admin_stock_product:{product_id}",
                 can_terminate_sessions=has_server_session(product),
                 can_fetch_code=has_server_session(product),
+                can_claim=product["status"] in {"available", "waiting_code"},
             ),
         )
         return
@@ -6645,6 +6654,7 @@ async def admin_terminate_sessions_confirm(query: CallbackQuery):
             back_callback=f"admin_stock_product:{product_id}",
             can_terminate_sessions=has_server_session(product),
             can_fetch_code=has_server_session(product) and product["status"] in {"waiting_code", "verifying", "sold"},
+            can_claim=product["status"] in {"available", "waiting_code"},
         ),
     )
 

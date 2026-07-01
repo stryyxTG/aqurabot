@@ -711,6 +711,7 @@ def admin_product_detail_kb(
     *,
     can_terminate_sessions: bool = False,
     can_fetch_code: bool = False,
+    can_claim: bool = True,
 ) -> InlineKeyboardMarkup:
     verify_back_token = admin_product_back_token(back_callback)
     rows = [
@@ -720,8 +721,9 @@ def admin_product_detail_kb(
             InlineKeyboardButton(text="session+json", callback_data=f"admin_download_session:{product_id}"),
             InlineKeyboardButton(text="tdata", callback_data=f"admin_download_tdata:{product_id}"),
         ],
-        [InlineKeyboardButton(text="Забрать со склада", callback_data=f"admin_claim_ask:{product_id}")],
     ]
+    if can_claim:
+        rows.append([InlineKeyboardButton(text="Забрать со склада", callback_data=f"admin_claim_ask:{product_id}")])
     if can_fetch_code:
         rows.append([InlineKeyboardButton(text="Получить к0d", callback_data=f"admin_get_code:{product_id}", icon_custom_emoji_id=BTN_ICON_CHECK)])
     if can_terminate_sessions:
