@@ -397,7 +397,7 @@ def product_group_cart_kb(
 def admin_home_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Добавить аккаунт", callback_data="admin_add")],
+            [InlineKeyboardButton(text="Добавить товары", callback_data="admin_add")],
             [
                 InlineKeyboardButton(text="Товары", callback_data="admin_stock"),
                 InlineKeyboardButton(text="Статистика", callback_data="admin_stats"),
