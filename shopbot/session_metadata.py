@@ -187,6 +187,9 @@ def serialize_session_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     device_model = serialized.pop("device_model", None)
     if device_model not in (None, "") and "device" not in serialized:
         serialized["device"] = device_model
+    system_version = serialized.pop("system_version", None)
+    if system_version not in (None, "") and "sdk" not in serialized:
+        serialized["sdk"] = system_version
     return serialized
 
 
