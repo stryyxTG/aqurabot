@@ -17,7 +17,7 @@ class Settings:
     api_id: int
     api_hash: str
     cryptopay_token: str = ""
-    shop_title: str = "Telegram Account Shop"
+    shop_title: str = "Telegram Product Shop"
     currency: str = "$"
     cryptopay_fiat: str = "USD"
     log_channel_id: int = -1003630251872
@@ -59,7 +59,7 @@ def load_settings() -> Settings:
     api_id = int(os.getenv("API_ID") or raw.get("API_ID") or 0)
     api_hash = (os.getenv("API_HASH") or raw.get("API_HASH") or "").strip()
     cryptopay_token = (os.getenv("CRYPTOPAY_TOKEN") or raw.get("CRYPTOPAY_TOKEN") or "").strip()
-    shop_title = (os.getenv("SHOP_TITLE") or raw.get("SHOP_TITLE") or "Telegram Account Shop").strip()
+    shop_title = (os.getenv("SHOP_TITLE") or raw.get("SHOP_TITLE") or "Telegram Product Shop").strip()
     currency = (os.getenv("CURRENCY") or raw.get("CURRENCY") or "$").strip()
     cryptopay_fiat = (os.getenv("CRYPTOPAY_FIAT") or raw.get("CRYPTOPAY_FIAT") or "USD").strip().upper()
     log_channel_id = _parse_int(os.getenv("LOG_CHANNEL_ID") or raw.get("LOG_CHANNEL_ID"), -1003630251872)

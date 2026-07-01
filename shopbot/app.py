@@ -1123,7 +1123,7 @@ def clean_stats_text(result: dict) -> str:
         f"missing_files : {result['missing_files']}\n"
         f"unsafe_paths  : {result['unsafe_paths']}\n"
         f"server_size   : {result['server_size'] / 1024 / 1024:.2f} MB\n"
-        "account_logout: enabled</code></pre>"
+        "product_logout: enabled</code></pre>"
     )
 
 
@@ -1156,11 +1156,11 @@ def session_file_sha256(content: bytes) -> str:
 
 
 def safe_session_upload_name(file_name: str | None) -> str:
-    name = Path(file_name or "account.session").name.strip() or "account.session"
+    name = Path(file_name or "product.session").name.strip() or "product.session"
     if not name.lower().endswith(".session"):
         name = f"{name}.session"
     stem = name[:-8]
-    stem = safe_filename_part(stem, "account")
+    stem = safe_filename_part(stem, "product")
     return f"{stem}.session"
 
 
@@ -1724,14 +1724,14 @@ async def save_product_tdata(product, tdata_dir: Path) -> None:
 async def build_tdata_archive(product, output_dir: Path) -> Path:
     file_label = product_account_label(product)
     tdata_dir = output_dir / "tdata"
-    archive_path = output_dir / f"account_{file_label}_tdata.zip"
+    archive_path = output_dir / f"product_{file_label}_tdata.zip"
     await save_product_tdata(product, tdata_dir)
     zip_directory(tdata_dir, archive_path)
     return archive_path
 
 
 def build_session_json_archive(products: list, output_dir: Path, batch_id: str) -> tuple[Path, list[str]]:
-    archive_path = output_dir / f"accounts_{safe_filename_part(batch_id, 'batch')}_session_json.zip"
+    archive_path = output_dir / f"products_{safe_filename_part(batch_id, 'batch')}_session_json.zip"
     used_labels: set[str] = set()
     errors: list[str] = []
     added = 0
@@ -1771,8 +1771,8 @@ def build_session_json_archive(products: list, output_dir: Path, batch_id: str) 
 
 
 async def build_batch_tdata_archive(products: list, output_dir: Path, batch_id: str) -> tuple[Path, list[str]]:
-    root_dir = output_dir / "tdata_accounts"
-    archive_path = output_dir / f"accounts_{safe_filename_part(batch_id, 'batch')}_tdata.zip"
+    root_dir = output_dir / "tdata_products"
+    archive_path = output_dir / f"products_{safe_filename_part(batch_id, 'batch')}_tdata.zip"
     used_labels: set[str] = set()
     errors: list[str] = []
     added = 0
@@ -3454,7 +3454,7 @@ async def render_cart(query: CallbackQuery) -> None:
 
 
 async def refresh_cart_unavailable_items(user_id: int) -> tuple[list[int], list[int]]:
-    """Replace stale cart rows with currently available accounts from the same department."""
+    """Replace stale cart rows with currently available products from the same department."""
     replaced: list[int] = []
     removed: list[int] = []
     for item in await list_cart_items(user_id):
@@ -4319,7 +4319,7 @@ async def user_download_session(query: CallbackQuery):
         if errors:
             caption += "\n\nЧасть файлов пропущена."
         await query.message.answer_document(
-            FSInputFile(archive_path, filename=f"account_{product_account_label(product)}_session_json.zip"),
+            FSInputFile(archive_path, filename=f"product_{product_account_label(product)}_session_json.zip"),
             caption=caption,
         )
 
@@ -6367,7 +6367,7 @@ async def admin_download_session(query: CallbackQuery):
         if errors:
             caption += "\n\nЧасть файлов пропущена."
         await query.message.answer_document(
-            FSInputFile(archive_path, filename=f"account_{product_account_label(product)}_session_json.zip"),
+            FSInputFile(archive_path, filename=f"product_{product_account_label(product)}_session_json.zip"),
             caption=caption,
         )
 
@@ -6956,7 +6956,7 @@ async def admin_add_bulk_sessions(message: Message, state: FSMContext):
         return
     
     doc = message.document
-    file_name = doc.file_name or "account.session"
+    file_name = doc.file_name or "product.session"
     lower_name = file_name.lower()
     if not lower_name.endswith((".session", ".json", ".zip")):
         await message.answer(f"Нужен .session, .json или .zip. Получен: {doc.file_name}")
@@ -7170,7 +7170,7 @@ async def admin_add_session_file(message: Message, state: FSMContext):
         return
     
     doc = message.document
-    file_name = doc.file_name or "account.session"
+    file_name = doc.file_name or "product.session"
     lower_name = file_name.lower()
     if not lower_name.endswith((".session", ".json")):
         await message.answer("Нужен файл с расширением .session или .json.")
@@ -7357,7 +7357,7 @@ async def admin_add_password(message: Message, state: FSMContext):
 
     if session_path and message.document:
         doc = message.document
-        file_name = doc.file_name or "account.json"
+        file_name = doc.file_name or "product.json"
         if not file_name.lower().endswith(".json"):
             await message.answer("На этом шаге можно прикрепить только .json или отправить пароль/-.")
             return

@@ -1,1 +1,1 @@
-﻿"""Telegram account shop bot package."""
+"""Telegram product shop bot package."""

@@ -1,4 +1,4 @@
-# Milfshop / Telegram Account Shop Bot
+# Milfshop / Telegram Product Shop Bot
 
 Telegram-бот магазина Telegram-товаров на `aiogram 3`, `Telethon` и SQLite.
 

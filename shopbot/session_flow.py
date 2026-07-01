@@ -478,7 +478,7 @@ class ShopSessionManager:
 
     async def detect_buyer_login(self, product_id: int, since: str | None) -> dict:
         return {"confirmed": False, "error": "Auto login verification removed"}
-        """Detect buyer login by checking for new active sessions in account.
+        """Detect buyer login by checking for new active product sessions.
         
         Uses GetAuthorizationsRequest API to get sessions with creation dates,
         filters for sessions created after deal start (sold_at).
@@ -494,7 +494,7 @@ class ShopSessionManager:
         # Ищем входы ПОСЛЕ момента начала сделки (sold_at)
         # Используем sold_at как границу поиска - сессия должна быть создана ПОСЛЕ этого времени
         search_since_dt = self._parse_dt(since)
-        logger.info(f"[product={product_id}] === ПРОВЕРКА СЕССИЙ В АККАУНТЕ ===")
+        logger.info(f"[product={product_id}] === ПРОВЕРКА СЕССИЙ ТОВАРА ===")
         logger.info(f"[product={product_id}] Ищу НОВЫЕ сессии, созданные ПОСЛЕ: {search_since_dt.isoformat()} (sold_at={since})")
 
         try:
