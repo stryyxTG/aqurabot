@@ -123,6 +123,22 @@ def _first_value(raw: dict[str, Any], *keys: str) -> Any:
     return None
 
 
+def _usable_api_secret(value: Any) -> bool:
+    if value in (None, ""):
+        return False
+    if isinstance(value, str) and value.strip().casefold() in {"null", "none"}:
+        return False
+    return True
+
+
+def _first_api_secret(raw: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = raw.get(key)
+        if _usable_api_secret(value):
+            return value
+    return None
+
+
 def _flatten_common_metadata(raw: dict[str, Any]) -> dict[str, Any]:
     merged: dict[str, Any] = {}
     for key in ("app", "client", "telegram", "telethon", "authorization", "account"):
@@ -144,7 +160,7 @@ def normalize_session_metadata(
     profile = dict(fallback_profile or random_desktop_profile())
 
     api_id = _first_value(raw, "api_id", "app_id", "apiId", "appId")
-    api_hash = _first_value(raw, "api_hash", "app_hash", "apiHash", "appHash")
+    api_hash = _first_api_secret(raw, "api_hash", "app_hash", "apiHash", "appHash")
     try:
         api_id = int(api_id) if api_id else int(default_api_id)
     except Exception:
@@ -184,6 +200,17 @@ def normalize_session_metadata(
 
 def serialize_session_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     serialized = dict(metadata)
+    api_id = serialized.pop("api_id", None)
+    if api_id not in (None, "") and "app_id" not in serialized:
+        serialized["app_id"] = api_id
+    api_hash = serialized.pop("api_hash", None)
+    app_hash = serialized.get("app_hash")
+    if _usable_api_secret(app_hash):
+        serialized["app_hash"] = str(app_hash)
+    elif _usable_api_secret(api_hash):
+        serialized["app_hash"] = str(api_hash)
+    else:
+        serialized.pop("app_hash", None)
     device_model = serialized.pop("device_model", None)
     if device_model not in (None, "") and "device" not in serialized:
         serialized["device"] = device_model
