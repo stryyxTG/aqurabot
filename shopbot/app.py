@@ -402,7 +402,6 @@ class AgreementMiddleware(BaseMiddleware):
 
 FSM_CALLBACK_WHITELIST = {
     AdminAddProductStates.waiting_add_method.state: ("admin_add_by_phone", "admin_add_by_session"),
-    AdminAddProductStates.waiting_session_count.state: ("session_count_single", "session_count_bulk"),
     AdminAddProductStates.waiting_bulk_sessions.state: ("bulk_sessions_done",),
     AdminAddProductStates.waiting_code.state: ("code_digit:", "code_backspace", "code_clear", "code_submit"),
     AdminAddProductStates.waiting_country.state: ("add_country:",),
@@ -6767,48 +6766,7 @@ async def admin_add_by_session(query: CallbackQuery, state: FSMContext):
     await query.answer()
     if not is_admin(query.from_user.id):
         return
-    
-    # Выбор: одна или несколько сессий
-    await state.set_state(AdminAddProductStates.waiting_session_count)
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Одна сессuя", callback_data="session_count_single")],
-        [InlineKeyboardButton(text="Несколько сессий", callback_data="session_count_bulk")],
-        [InlineKeyboardButton(text="Отменить", callback_data="cancel_flow:admin_home", icon_custom_emoji_id=BTN_ICON_CANCEL)],
-    ])
-    await safe_edit(
-        query.message,
-        "<b>Добавление по .session файлам</b>\n\n"
-        "Выберите режим:\n\n"
-        "<b>Одна сессия</b> - один файл и одна карточка.\n"
-        "<b>Несколько сессий</b> - много файлов с общими данными.",
-        kb
-    )
 
-
-@dp.callback_query(F.data == "session_count_single")
-async def session_count_single(query: CallbackQuery, state: FSMContext):
-    await ensure_known_user(query)
-    await query.answer()
-    if not is_admin(query.from_user.id):
-        return
-    
-    await state.set_state(AdminAddProductStates.waiting_session_file)
-    await safe_edit(
-        query.message,
-        "<b>Загрузка .session файла</b>\n\n"
-        "Отправь файл сессии Telethon (.session файл)\n\n"
-        "После загрузки я попрошу страну и отдел товара.",
-        cancel_flow_kb("admin_home"),
-    )
-
-
-@dp.callback_query(F.data == "session_count_bulk")
-async def session_count_bulk(query: CallbackQuery, state: FSMContext):
-    await ensure_known_user(query)
-    await query.answer()
-    if not is_admin(query.from_user.id):
-        return
-    
     await state.set_state(AdminAddProductStates.waiting_bulk_sessions)
     await state.update_data(
         bulk_sessions=[],
@@ -6823,13 +6781,12 @@ async def session_count_bulk(query: CallbackQuery, state: FSMContext):
     ])
     await safe_edit(
         query.message,
-        "<b>Загрузка нескольких .session файлов</b>\n\n"
+        "<b>Добавление по .session файлам</b>\n\n"
         "Отправляй .session, .json или .zip с парами session/json.\n\n"
-        "Когда загрузите все файлы, нажмите <b>Готово</b>.\n\n"
-        "Затем заполнишь данные один раз для всех сессий.",
-        kb,
+        "Можно загрузить один аккаунт или сразу пачку.\n\n"
+        "Когда загрузите все файлы, нажмите <b>Готово</b>.",
+        kb
     )
-
 
 @dp.message(AdminAddProductStates.waiting_bulk_sessions)
 async def admin_add_bulk_sessions(message: Message, state: FSMContext):
@@ -7577,7 +7534,6 @@ async def cancel_flow(query: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     is_admin_add_flow = is_admin(query.from_user.id) and current_state in {
         AdminAddProductStates.waiting_add_method.state,
-        AdminAddProductStates.waiting_session_count.state,
         AdminAddProductStates.waiting_session_file.state,
         AdminAddProductStates.waiting_bulk_sessions.state,
         AdminAddProductStates.waiting_bulk_password.state,

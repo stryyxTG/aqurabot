@@ -3,7 +3,6 @@
 
 class AdminAddProductStates(StatesGroup):
     waiting_add_method = State()  # Выбор: номер+код или файл сессии
-    waiting_session_count = State()  # Одна или несколько сессий
     waiting_session_file = State()  # Загрузка одного .session файла
     waiting_bulk_sessions = State()  # Загрузка нескольких .session файлов
     waiting_bulk_password = State()  # Общий пароль 2FA для всех сессий
