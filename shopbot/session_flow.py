@@ -335,6 +335,15 @@ class ShopSessionManager:
         except Exception as exc:
             raise RuntimeError(self._format_login_error(exc, flow.proxy_settings)) from exc
         flow.password_used = password
+        flow.metadata = self._load_client_metadata(flow.temp_session_base, flow.metadata)
+        flow.metadata["twofa_password"] = password
+        write_session_metadata(
+            flow.temp_session_base,
+            flow.metadata,
+            default_api_id=self.settings.api_id,
+            default_api_hash=self.settings.api_hash,
+            extra={"phone": flow.phone},
+        )
         return me
 
     async def finalize_product_session(self, admin_id: int, product_id: int) -> Path:
