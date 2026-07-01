@@ -187,6 +187,7 @@ from .session_metadata import (
     load_metadata_file,
     metadata_match_keys,
     normalize_session_metadata,
+    serialize_session_metadata,
     session_original_json_path,
     session_json_path,
     write_original_session_json,
@@ -1760,7 +1761,7 @@ def build_session_json_archive(products: list, output_dir: Path, batch_id: str) 
                     metadata["session_file"] = f"{label}.session"
                     archive.writestr(
                         f"{label}.json",
-                        json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
+                        json.dumps(serialize_session_metadata(metadata), ensure_ascii=False, indent=2) + "\n",
                     )
                 added += 1
             except Exception as exc:

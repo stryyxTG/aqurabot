@@ -182,6 +182,14 @@ def normalize_session_metadata(
     return profile
 
 
+def serialize_session_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    serialized = dict(metadata)
+    device_model = serialized.pop("device_model", None)
+    if device_model not in (None, "") and "device" not in serialized:
+        serialized["device"] = device_model
+    return serialized
+
+
 def load_metadata_file(path: str | Path) -> dict[str, Any]:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
@@ -213,7 +221,7 @@ def write_session_metadata(
     if extra:
         normalized.update({key: value for key, value in extra.items() if value not in (None, "")})
     path = session_json_path(session_path)
-    path.write_text(json.dumps(normalized, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    path.write_text(json.dumps(serialize_session_metadata(normalized), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return path
 
 
