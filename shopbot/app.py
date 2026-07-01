@@ -3725,14 +3725,14 @@ async def cart_checkout(query: CallbackQuery):
             f"{ICON_BLOCK} <b>Недостаточно средств</b>\n\n"
             f"К оплате: <b>{fmt_money(payable_total)}</b>\n"
             f"Ваш баланс: <b>{fmt_money(balance)}</b>\n\n"
-            "Аккаунты не проверялись и не готовились к выдаче.",
+            "Товары не проверялись и не готовились к выдаче.",
             back_to_main_kb(is_admin(query.from_user.id)),
         )
         return
     await safe_edit(
         query.message,
         f"{ICON_KEYBOARD} <b>Формируем заказ</b>\n\n"
-        f"Проверяю аккаунты перед выдачей: <b>{len(payable_items)}</b> шт. Обычно это занимает несколько секунд.",
+        f"Проверяю товары перед выдачей: <b>{len(payable_items)}</b> шт. Обычно это занимает несколько секунд.",
     )
     removed_dead = []
     removed_dead_total = 0.0
@@ -4487,7 +4487,7 @@ async def product_group_buy(query: CallbackQuery):
         await query.answer("Некорректный товар.", show_alert=True)
         return
 
-    await query.answer("Проверяю аккаунт...")
+    await query.answer("Проверяю товар...")
     candidates = await list_available_products_in_department(sample_product_id, limit=1000)
     if not candidates:
         await safe_edit(query.message, f"{ICON_BLOCK} <b>В этом отделе сейчас 0 в наличии.</b>", back_to_main_kb(is_admin(query.from_user.id)))
@@ -4496,7 +4496,7 @@ async def product_group_buy(query: CallbackQuery):
     await safe_edit(
         query.message,
         f"{ICON_KEYBOARD} <b>Формируем заказ</b>\n\n"
-        "Проверяю аккаунт перед выдачей. Обычно это занимает несколько секунд.",
+        "Проверяю товар перед выдачей. Обычно это занимает несколько секунд.",
     )
     result = None
     product = None
@@ -4570,7 +4570,7 @@ async def product_buy(query: CallbackQuery):
     await safe_edit(
         query.message,
         f"{ICON_KEYBOARD} <b>Формируем заказ</b>\n\n"
-        "Проверяю аккаунт перед выдачей. Обычно это занимает несколько секунд.",
+        "Проверяю товар перед выдачей. Обычно это занимает несколько секунд.",
     )
     if not await verify_product_alive_for_sale(candidate, context=f"Покупка конкретного товара пользователем {query.from_user.id}"):
         await safe_edit(
