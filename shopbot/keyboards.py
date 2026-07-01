@@ -357,7 +357,7 @@ def product_list_kb(*, prefix: str, product_rows: list[list[InlineKeyboardButton
 def product_detail_kb(product_id: int, *, can_buy: bool, back_callback: str, can_claim: bool = False) -> InlineKeyboardMarkup:
     rows = []
     if can_claim:
-        rows.append([InlineKeyboardButton(text="Забрать аkkаунт", callback_data=f"admin_claim_ask:{product_id}")])
+        rows.append([InlineKeyboardButton(text="Забрать товар", callback_data=f"admin_claim_ask:{product_id}")])
     if can_buy:
         rows.append([InlineKeyboardButton(text="Купить", callback_data=f"buy_{product_id}")])
         rows.append([InlineKeyboardButton(text="Добавить в корзину", callback_data=f"cart_add:{product_id}")])
@@ -716,8 +716,8 @@ def admin_product_detail_kb(
         [InlineKeyboardButton(text="Проверить товар", callback_data=f"admin_verify_account:{product_id}")],
         [InlineKeyboardButton(text="Редактировать", callback_data=f"admin_edit_product:{product_id}")],
         [
-            InlineKeyboardButton(text=".session", callback_data=f"admin_download_session:{product_id}"),
-            # TData functionality removed
+            InlineKeyboardButton(text="session+json", callback_data=f"admin_download_session:{product_id}"),
+            InlineKeyboardButton(text="tdata", callback_data=f"admin_download_tdata:{product_id}"),
         ],
         [InlineKeyboardButton(text="Забрать со склада", callback_data=f"admin_claim_ask:{product_id}")],
     ]
@@ -768,7 +768,10 @@ def admin_user_manage_kb(target_user_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="Покупки", callback_data=f"admin_user_purchases:{target_user_id}")],
-            [InlineKeyboardButton(text="Пополнение баланса", callback_data=f"admin_user_topup:{target_user_id}")],
+            [
+                InlineKeyboardButton(text="Пополнение баланса", callback_data=f"admin_user_topup:{target_user_id}"),
+                InlineKeyboardButton(text="Списать баланс", callback_data=f"admin_user_withdraw:{target_user_id}"),
+            ],
             [InlineKeyboardButton(text="Обнулить баланс", callback_data=f"admin_user_reset:{target_user_id}")],
             [InlineKeyboardButton(text="Новый поиск", callback_data="admin_user_search")],
             [InlineKeyboardButton(text="Назад", callback_data="admin_home", icon_custom_emoji_id=BTN_ICON_BACK)],

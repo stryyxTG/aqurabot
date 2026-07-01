@@ -2028,7 +2028,7 @@ async def cmd_scan_sessions(message: Message):
         examples += f"\n...и еще {len(result['orphan_files']) - 10}"
     text = (
         "<b>Скан сессий</b>\n\n"
-        "Teleгram-аkkаунты не открывались. Это только проверка файлов.\n\n"
+        "Telegram-товары не открывались. Это только проверка файлов.\n\n"
         f"<b>Путей в базе:</b> {result['db_paths']}\n"
         f"<b>Файлов найдено:</b> {result['total_files']}\n"
         f"<b>Привязано к товарам:</b> {result['protected_files']}\n"
@@ -2062,7 +2062,7 @@ async def cmd_cleanup_sessions(message: Message):
             logger.warning("Could not remove orphan session file: %s", path)
     await message.answer(
         "<b>Очистка сессий завершена</b>\n\n"
-        "аkkауHты не открывались. Удалялись только файлы, не привязанные к товарам в базе.\n\n"
+        "Товары не открывались. Удалялись только файлы, не привязанные к товарам в базе.\n\n"
         f"<b>Удалено файлов:</b> {removed}\n"
         f"<b>Освобождено:</b> {human_size(removed_size)}\n"
         f"<b>Ошибок:</b> {failed}"
@@ -3874,7 +3874,7 @@ async def menu_purchases(query: CallbackQuery):
     rows = []
     for group in page_items:
         count = int(group["items_count"])
-        title = group["first_title"] or "Аkkаунт"
+        title = group["first_title"] or "Товар"
         phone = group["first_phone"] or "—"
         if count > 1:
             label = f"{count} товаров • {short_date(group['created_at'])} • {fmt_money(float(group['total_price']))}"
@@ -4644,7 +4644,7 @@ async def admin_verify_account(query: CallbackQuery):
         await query.answer("Товар не найден.", show_alert=True)
         return
     
-    await query.answer("Проверяю аkkаунт...")
+    await query.answer("Проверяю товар...")
     
     try:
         result = await session_manager.verify_account_alive(product_id)
@@ -4676,11 +4676,11 @@ async def admin_scan_accounts(query: CallbackQuery, state: FSMContext):
     limit = int(data.get("scan_limit") or 5)
     await state.update_data(scan_interval=interval, scan_limit=limit)
     text = (
-        "<b>Глубокая проверка аkkаунтов</b>\n\n"
-        "Эта проверка подключается к сессuu каждого аkkаунта и осторожно проверяет, валидна ли она. "
+        "<b>Глубокая проверка товаров</b>\n\n"
+        "Эта проверка подключается к сессuu каждого товара и осторожно проверяет, валидна ли она. "
         "Используйте только когда это действительно нужно.\n\n"
         f"<b>Интервал:</b> {interval} сек\n"
-        f"<b>Лимит:</b> {limit} аkkаунтов за запуск\n\n"
+        f"<b>Лимит:</b> {limit} товаров за запуск\n\n"
         "Рекомендуемо: 60-120 секунд и небольшой лимит."
     )
     await safe_edit(query.message, text, admin_scan_settings_kb(interval, limit))
@@ -4789,7 +4789,7 @@ async def admin_scan_confirm(query: CallbackQuery, state: FSMContext):
     await safe_edit(
         query.message,
         "<b>Подтвердите глубокую проверку</b>\n\n"
-        "Бот будет по очереди подключаться к сеccuям аkkаунTов. "
+        "Бот будет по очереди подключаться к сеccuям товаров. "
         "Это не локальный скан файлов, поэтому запускать нужно осторожно.\n\n"
         f"<b>Интервал:</b> {interval} сек\n"
         f"<b>Лимит:</b> {limit} товаров",
@@ -4934,7 +4934,7 @@ async def admin_product_search_start(query: CallbackQuery, state: FSMContext):
     await safe_edit(
         query.message,
         "<b>Поиск товара</b>\n\n"
-        "Отправьте номер телефона аkkаунта или ID товара.",
+        "Отправьте номер телефона товара или ID товара.",
         cancel_flow_kb("admin_home"),
     )
 
@@ -5068,7 +5068,7 @@ async def admin_purchase_detail_view(query: CallbackQuery):
         f"<b>Цена:</b> {fmt_money(float(product['price']))}\n"
         f"<b>Статус:</b> {html.escape(product['status'])}\n\n"
         
-        f"<b>Данные аkkаунта:</b>\n"
+        f"<b>Данные товара:</b>\n"
         f"<b>Телефон:</b> <code>{html.escape(product['phone'] or '—')}</code>\n"
         f"<b>Username:</b> {html.escape(product['username'] or '—')}\n"
         f"<b>Имя:</b> {html.escape(product['first_name'] or '—')}\n"
@@ -5096,9 +5096,28 @@ async def admin_purchase_detail_view(query: CallbackQuery):
 async def admin_user_topup_btn(query: CallbackQuery, state: FSMContext):
     if not is_admin(query.from_user.id): return
     target_id = int(query.data.split(":")[1])
-    await state.update_data(target_user_id=target_id)
+    await state.update_data(target_user_id=target_id, balance_action="topup")
     await state.set_state(AdminTopUpStates.waiting_amount)
     await safe_edit(query.message, f"<b>{ICON_COIN} Выдача баланса</b>\n\nПользователь: <code>{target_id}</code>\nВведите сумму:", cancel_flow_kb("admin_home"))
+    await query.answer()
+
+
+@dp.callback_query(F.data.startswith("admin_user_withdraw:"))
+async def admin_user_withdraw_btn(query: CallbackQuery, state: FSMContext):
+    if not is_admin(query.from_user.id):
+        return
+    target_id = int(query.data.split(":")[1])
+    current_balance = await get_balance(target_id)
+    await state.update_data(target_user_id=target_id, balance_action="withdraw")
+    await state.set_state(AdminTopUpStates.waiting_amount)
+    await safe_edit(
+        query.message,
+        f"<b>{ICON_COIN} Списание баланса</b>\n\n"
+        f"Пользователь: <code>{target_id}</code>\n"
+        f"{ICON_COIN} <b>Текущий баланс:</b> {fmt_money(current_balance)}\n\n"
+        "Введите сумму списания:",
+        cancel_flow_kb("admin_home"),
+    )
     await query.answer()
 
 
@@ -5156,7 +5175,7 @@ async def admin_claim_ask(query: CallbackQuery):
     back_callback = "admin_home" if query.data.endswith(":admin") else "admin_stock_product:%s" % product_id
     text = (
         "<b>Подтвердите действие</b>\n\n"
-        f"Забрать аkkаунт со склада?\n\n"
+        f"Забрать товар со склада?\n\n"
         f"{ICON_PURCHASE_TAG} <b>Товар:</b> {render_rich_text(product['title'])}\n"
         f"<b>Телефон:</b> <code>{html.escape(product['phone'] or '—')}</code>"
     )
@@ -6214,7 +6233,7 @@ async def admin_stock_sold_list(query: CallbackQuery):
 
     text = (
         "<b>История продаж</b>\n\n"
-        f"Продано аkkаунтов: <b>{total}</b>\n"
+        f"Продано товаров: <b>{total}</b>\n"
         f"На странице: <b>{len(products)}</b>"
     )
     await safe_edit(
@@ -6295,11 +6314,82 @@ async def admin_download_session(query: CallbackQuery):
         await query.answer("Файл на диске отсутствует.", show_alert=True)
         return
     
-    await query.answer("Отправляю файл...")
-    await query.message.answer_document(
-        FSInputFile(session_file, filename=f"account_{product['phone'] or product_id}.session"),
-        caption=f"Файл сессии для аkkаунта <code>{product['phone']}</code>"
+    await query.answer("Готовлю session+json...")
+    with tempfile.TemporaryDirectory(prefix=f"admin_session_json_{product_id}_") as tmp:
+        tmp_dir = Path(tmp)
+        try:
+            archive_path, errors = build_session_json_archive([product], tmp_dir, f"admin_{product_id}")
+        except Exception as exc:
+            await query.message.answer(
+                f"{ICON_BLOCK} <b>Не удалось подготовить session+json</b>\n\n"
+                f"<code>{html.escape(str(exc) or type(exc).__name__)}</code>"
+            )
+            return
+        caption = (
+            f"{ICON_PURCHASE_TAG} <b>{render_rich_text(product['title'])}</b>\n"
+            f"Телефон: <code>{html.escape(product['phone'] or '—')}</code>\n"
+            "Архив session+json"
+        )
+        if errors:
+            caption += "\n\nЧасть файлов пропущена."
+        await query.message.answer_document(
+            FSInputFile(archive_path, filename=f"account_{product_account_label(product)}_session_json.zip"),
+            caption=caption,
+        )
+
+
+@dp.callback_query(F.data.startswith("admin_download_tdata:"))
+async def admin_download_tdata(query: CallbackQuery):
+    await ensure_known_user(query)
+    if not is_admin(query.from_user.id):
+        return
+    try:
+        product_id = int(query.data.split(":", 1)[1])
+    except ValueError:
+        await query.answer("Некорректный товар.", show_alert=True)
+        return
+
+    product = await get_product(product_id)
+    if not product:
+        await query.answer("Товар не найден.", show_alert=True)
+        return
+
+    session_file = product_session_file(product)
+    if not session_file:
+        await query.answer("Файл .session не найден.", show_alert=True)
+        return
+
+    await query.answer("Готовлю tdata...")
+    progress = await query.message.answer(
+        f"{ICON_FOLDER} <b>Готовлю tdata</b>\n\n"
+        f"{ICON_PURCHASE_TAG} <b>Товар:</b> {render_rich_text(product['title'])}\n"
+        f"Телефон: <code>{html.escape(product['phone'] or '—')}</code>"
     )
+
+    with tempfile.TemporaryDirectory(prefix=f"admin_tdata_{product_id}_") as tmp:
+        tmp_dir = Path(tmp)
+        try:
+            archive_path = await build_tdata_archive(product, tmp_dir)
+        except Exception as exc:
+            logger.exception("Could not build admin tdata for product #%s", product_id)
+            await progress.edit_text(
+                f"{ICON_BLOCK} <b>Не удалось подготовить tdata</b>\n\n"
+                f"<code>{html.escape(str(exc) or type(exc).__name__)}</code>"
+            )
+            return
+
+        try:
+            await progress.delete()
+        except Exception:
+            pass
+        await query.message.answer_document(
+            FSInputFile(archive_path, filename=archive_path.name),
+            caption=(
+                f"{ICON_PURCHASE_TAG} <b>{render_rich_text(product['title'])}</b>\n"
+                f"Телефон: <code>{html.escape(product['phone'] or '—')}</code>\n"
+                "Архив tdata"
+            ),
+        )
 
 
 @dp.callback_query(F.data.startswith("admin_stock_product:"))
@@ -6683,6 +6773,7 @@ async def admin_topup_start(query: CallbackQuery, state: FSMContext):
     await query.answer()
     if not is_admin(query.from_user.id):
         return
+    await state.update_data(balance_action="topup")
     await state.set_state(AdminTopUpStates.waiting_user_id)
     await safe_edit(query.message, f"<b>{ICON_COIN} Выдача баланса</b>\n\nОтправьте <code>user_id</code> пользователя.", cancel_flow_kb("admin_home"))
 
@@ -6701,15 +6792,51 @@ async def admin_topup_user_id(message: Message, state: FSMContext):
 @dp.message(AdminTopUpStates.waiting_amount)
 async def admin_topup_amount(message: Message, state: FSMContext):
     amount = parse_float(message.text or "")
-    if amount is None:
-        await message.answer("Нужна корректная сумма.")
+    if amount is None or amount <= 0:
+        await message.answer("Нужна корректная положительная сумма.")
         return
     data = await state.get_data()
     target_user_id = int(data["target_user_id"])
+    action = data.get("balance_action") or "topup"
+    if action == "withdraw":
+        current_balance = await get_balance(target_user_id)
+        if current_balance + MONEY_EPSILON < amount:
+            await message.answer(
+                f"Нельзя списать больше текущего баланса.\n\n"
+                f"{ICON_COIN} <b>Текущий баланс:</b> {fmt_money(current_balance)}"
+            )
+            return
+        new_balance = await add_balance(
+            target_user_id,
+            -amount,
+            kind="admin_withdraw",
+            note=f"Списание администратором {message.from_user.id}",
+            actor_id=message.from_user.id,
+        )
+        await log_purchase("admin_withdraw", user_id=target_user_id, amount=amount, admin_id=message.from_user.id)
+        await state.clear()
+        await message.answer(
+            f"{ICON_COIN} Баланс списан.\n\n"
+            f"<b>User ID:</b> <code>{target_user_id}</code>\n"
+            f"<b>Сумма:</b> {fmt_money(amount)}\n"
+            f"{ICON_COIN} <b>Новый баланс:</b> {fmt_money(new_balance)}",
+            reply_markup=admin_user_manage_kb(target_user_id),
+        )
+        try:
+            await bot.send_message(
+                target_user_id,
+                f"{ICON_COIN} С баланса списано администратором.\n\n"
+                f"<b>Сумма:</b> {fmt_money(amount)}\n"
+                f"<b>Текущий баланс:</b> {fmt_money(new_balance)}",
+            )
+        except Exception:
+            pass
+        return
+
     new_balance = await add_balance(target_user_id, amount, kind="admin_topup", note=f"Пополнение от администратора {message.from_user.id}", actor_id=message.from_user.id)
     await log_purchase("admin_topup", user_id=target_user_id, amount=amount, admin_id=message.from_user.id)
     await state.clear()
-    await message.answer(f"{ICON_COIN} Баланс выдан.\n\n<b>User ID:</b> <code>{target_user_id}</code>\n<b>Сумма:</b> {fmt_money(amount)}\n{ICON_COIN} <b>Новый баланс:</b> {fmt_money(new_balance)}", reply_markup=admin_home_kb())
+    await message.answer(f"{ICON_COIN} Баланс выдан.\n\n<b>User ID:</b> <code>{target_user_id}</code>\n<b>Сумма:</b> {fmt_money(amount)}\n{ICON_COIN} <b>Новый баланс:</b> {fmt_money(new_balance)}", reply_markup=admin_user_manage_kb(target_user_id))
     try:
         await bot.send_message(target_user_id, f"{ICON_COIN} Баланс пополнен.\n\n<b>Сумма:</b> {fmt_money(amount)}\n<b>Текущий баланс:</b> {fmt_money(new_balance)}")
     except Exception:
@@ -7574,10 +7701,10 @@ async def cancel_flow(query: CallbackQuery, state: FSMContext):
         await state.update_data(scan_interval=60, scan_limit=5)
         await safe_edit(
             query.message,
-            "<b>Глубокая проверка аkkаунтов</b>\n\n"
-            "Эта проверка подключается к с3cсuи каждого аkkаунта и осторожно проверяет, валидна ли она.\n\n"
+            "<b>Глубокая проверка товаров</b>\n\n"
+            "Эта проверка подключается к с3cсuи каждого товара и осторожно проверяет, валидна ли она.\n\n"
             "<b>Интервал:</b> 60 сек\n"
-            "<b>Лимит:</b> 5 аkkаунтов за запуск",
+            "<b>Лимит:</b> 5 товаров за запуск",
             admin_scan_settings_kb(60, 5),
         )
     elif back_callback == "menu_balance":
