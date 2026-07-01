@@ -190,6 +190,9 @@ def serialize_session_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     system_version = serialized.pop("system_version", None)
     if system_version not in (None, "") and "sdk" not in serialized:
         serialized["sdk"] = system_version
+    twofa_password = serialized.pop("twofa_password", None)
+    if twofa_password not in (None, "") and "twoFA" not in serialized:
+        serialized["twoFA"] = twofa_password
     return serialized
 
 
