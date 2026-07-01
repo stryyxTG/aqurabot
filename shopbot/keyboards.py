@@ -712,8 +712,9 @@ def admin_product_detail_kb(
     can_terminate_sessions: bool = False,
     can_fetch_code: bool = False,
 ) -> InlineKeyboardMarkup:
+    verify_back_token = admin_product_back_token(back_callback)
     rows = [
-        [InlineKeyboardButton(text="Проверить товар", callback_data=f"admin_verify_account:{product_id}")],
+        [InlineKeyboardButton(text="Проверить товар", callback_data=f"admin_verify_account:{product_id}:{verify_back_token}")],
         [InlineKeyboardButton(text="Редактировать", callback_data=f"admin_edit_product:{product_id}")],
         [
             InlineKeyboardButton(text="session+json", callback_data=f"admin_download_session:{product_id}"),
@@ -728,6 +729,16 @@ def admin_product_detail_kb(
     rows.append([InlineKeyboardButton(text="Удалить товар", callback_data=f"admin_remove_{product_id}", icon_custom_emoji_id=BTN_ICON_CANCEL)])
     rows.append([InlineKeyboardButton(text="Назад", callback_data=back_callback, icon_custom_emoji_id=BTN_ICON_BACK)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_product_back_token(back_callback: str) -> str:
+    if back_callback == "admin_product_search":
+        return "search"
+    if back_callback.startswith("admin_stock_sold_list:"):
+        return "sold:" + back_callback.split(":", 1)[1]
+    if back_callback.startswith("admin_product_group:"):
+        return "group:" + back_callback.split(":", 1)[1]
+    return "catalog"
 
 
 def admin_product_search_results_kb(product_rows: list[list[InlineKeyboardButton]]) -> InlineKeyboardMarkup:

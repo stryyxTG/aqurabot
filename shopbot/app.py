@@ -4626,18 +4626,41 @@ async def product_buy(query: CallbackQuery):
     )
 
 
+def admin_product_back_callback_from_token(token: str) -> str:
+    if token == "search":
+        return "admin_product_search"
+    if token.startswith("sold:"):
+        try:
+            return f"admin_stock_sold_list:{max(0, int(token.split(':', 1)[1]))}"
+        except ValueError:
+            return "admin_stock_catalog"
+    if token.startswith("group:"):
+        parts = token.split(":")
+        if len(parts) == 4:
+            try:
+                sample_product_id = int(parts[1])
+                country_id = int(parts[2])
+                page = max(0, int(parts[3]))
+            except ValueError:
+                return "admin_stock_catalog"
+            return f"admin_product_group:{sample_product_id}:{country_id}:{page}"
+    return "admin_stock_catalog"
+
+
 @dp.callback_query(F.data.startswith("admin_verify_account:"))
 async def admin_verify_account(query: CallbackQuery):
     await ensure_known_user(query)
     await query.answer()
     if not is_admin(query.from_user.id):
         return
-    
+
+    parts = (query.data or "").split(":")
     try:
-        product_id = int(query.data.split(":", 1)[1])
-    except Exception:
+        product_id = int(parts[1])
+    except (IndexError, ValueError):
         await query.answer("Некорректный товар.", show_alert=True)
         return
+    back_callback = admin_product_back_callback_from_token(":".join(parts[2:]) if len(parts) > 2 else "catalog")
     
     product = await get_product(product_id)
     if not product:
@@ -4659,7 +4682,18 @@ async def admin_verify_account(query: CallbackQuery):
         else:
             status_text = f"<b>Товар не прошел проверку</b>\n\n{result['error']}"
         
-        await safe_edit(query.message, status_text, admin_product_detail_kb(product_id))
+        has_session = has_server_session(product)
+        can_fetch_code = has_session and product["status"] in {"waiting_code", "verifying", "sold"}
+        await safe_edit(
+            query.message,
+            status_text,
+            admin_product_detail_kb(
+                product_id,
+                back_callback=back_callback,
+                can_terminate_sessions=has_session,
+                can_fetch_code=can_fetch_code,
+            ),
+        )
     
     except Exception as e:
         logger.exception("Ошибка при проверке товара")
