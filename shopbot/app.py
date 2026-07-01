@@ -2344,6 +2344,10 @@ async def cmd_cards(message: Message, state: FSMContext):
         )
         return
 
+    await show_admin_cards_editor(message, state)
+
+
+async def show_admin_cards_editor(message: Message, state: FSMContext) -> None:
     current_cards = await get_ua_cards_text()
     current_block = current_cards if current_cards else "<i>Реквизиты сейчас пустые.</i>"
     await state.set_state(AdminCardsStates.waiting_cards_text)
@@ -2355,6 +2359,15 @@ async def cmd_cards(message: Message, state: FSMContext):
         "Чтобы очистить реквизиты, отправьте <code>-</code>.",
         reply_markup=cancel_flow_kb("admin_home"),
     )
+
+
+@dp.callback_query(F.data == "admin_cards")
+async def admin_cards(query: CallbackQuery, state: FSMContext):
+    await ensure_known_user(query)
+    await query.answer()
+    if not is_admin(query.from_user.id):
+        return
+    await show_admin_cards_editor(query.message, state)
 
 
 @dp.message(AdminCardsStates.waiting_cards_text)

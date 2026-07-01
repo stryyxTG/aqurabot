@@ -406,6 +406,7 @@ def admin_home_kb() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="Выдать баланс", callback_data="admin_topup"),
                 InlineKeyboardButton(text="Прокси", callback_data="admin_proxy"),
             ],
+            [InlineKeyboardButton(text="Реквизиты UA", callback_data="admin_cards")],
             [InlineKeyboardButton(text="Поиск пользователя", callback_data="admin_user_search")],
             [InlineKeyboardButton(text="Поиск товара", callback_data="admin_product_search")],
             [InlineKeyboardButton(text="Страны каталога", callback_data="admin_catalog")],
