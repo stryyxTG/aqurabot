@@ -208,6 +208,7 @@ PAGE_SIZE = 7
 PURCHASE_PAGE_SIZE = 7
 ADMIN_SOLD_PAGE_SIZE = 21
 JOIN_REQUEST_PENDING_TTL = timedelta(hours=24)
+DISPLAY_TZ = timezone(timedelta(hours=3), "GMT+3")
 LOG_CHANNEL_ID = settings.log_channel_id
 RU_TOPUP_CHAT_ID = settings.ru_topup_chat_id
 UA_TOPUP_CHAT_ID = settings.ua_topup_chat_id
@@ -554,6 +555,13 @@ def short_date(value: object) -> str:
     if not value:
         return "—"
     return str(value)[:10]
+
+
+def fmt_local_datetime(value: object) -> str:
+    parsed = parse_iso_datetime(str(value)) if value else None
+    if not parsed:
+        return "—"
+    return parsed.astimezone(DISPLAY_TZ).strftime("%d.%m.%Y %H:%M GMT+3")
 
 
 def extract_custom_emoji_id(message: Message) -> str | None:
@@ -1486,7 +1494,7 @@ def product_group_public_text(group, *, in_cart_count: int | None = None, availa
 
 def product_admin_text(product) -> str:
     sold_to = product['sold_to'] or '—'
-    sold_at = product['sold_at'] or '—'
+    sold_at = fmt_local_datetime(product['sold_at'])
     account_name = html.escape(product['first_name'] or product['username'] or '—')
     return (
         "<b>Карточка товара</b>\n\n"
@@ -3877,9 +3885,9 @@ async def menu_purchases(query: CallbackQuery):
         title = group["first_title"] or "Товар"
         phone = group["first_phone"] or "—"
         if count > 1:
-            label = f"{count} товаров • {short_date(group['created_at'])} • {fmt_money(float(group['total_price']))}"
+            label = f"{count} товаров • {fmt_local_datetime(group['created_at'])} • {fmt_money(float(group['total_price']))}"
         else:
-            label = f"{title} • {phone} • {short_date(group['created_at'])}"
+            label = f"{title} • {phone} • {fmt_local_datetime(group['created_at'])}"
         rows.append([
             inline_button(
                 text=label,
@@ -3916,7 +3924,7 @@ async def purchase_batch_detail(query: CallbackQuery):
         return
 
     total = sum(float(item["price"]) for item in purchases)
-    date = short_date(purchases[0]["created_at"])
+    date = fmt_local_datetime(purchases[0]["created_at"])
     rows = []
     for idx, item in enumerate(purchases, 1):
         rows.append([
@@ -3972,7 +3980,7 @@ async def my_purchase_detail(query: CallbackQuery):
         f"<b>Номер:</b> <code>{html.escape(purchase['phone'] or '—')}</code>\n"
         f"<b>Облачный пароль:</b> <code>{html.escape(purchase['twofa_password'] or 'нет')}</code>\n"
         f"<b>Заметка:</b> {render_rich_text(purchase['extra_code'] or 'нет')}\n"
-        f"<b>Дата:</b> {short_date(purchase['created_at'])}\n"
+        f"<b>Дата:</b> {fmt_local_datetime(purchase['created_at'])}\n"
         f"<b>Сумма:</b> {fmt_money(float(purchase['price']))}"
     )
     await safe_edit(query.message, text, purchase_history_detail_kb(page, int(purchase["product_id"]), batch_id or None))
@@ -5044,7 +5052,7 @@ async def admin_user_purchases_view(query: CallbackQuery):
         title = p['title']
         country = p['country']
         price = fmt_money(float(p['price']))
-        date = p['created_at'][:10] if p['created_at'] else "—"
+        date = fmt_local_datetime(p['created_at'])
         account_name = p['first_name'] or p['username'] or '—'
         lines.append(f"{idx}. <b>{account_name}</b> | {title} ({country}) - {price} [{date}]")
         lines.append(f"   ID товара: <code>{product_id}</code>")
@@ -5127,7 +5135,7 @@ async def admin_purchase_detail_view(query: CallbackQuery):
         
         f"<b>История продажи:</b>\n"
         f"Покупатель: <code>{product['sold_to'] or '—'}</code>\n"
-        f"Дата продажи: <b>{product['sold_at'][:10] if product['sold_at'] else '—'}</b>\n"
+        f"Дата продажи: <b>{fmt_local_datetime(product['sold_at'])}</b>\n"
         f"Цена продажи: <b>{fmt_money(float(product['sold_price'])) if product['sold_price'] else '—'}</b>"
     )
     
