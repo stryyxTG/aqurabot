@@ -228,6 +228,8 @@ FEATURE_CATALOG_STARS = False
 MIN_CRYPTO_TOPUP_AMOUNT = 0.1
 FALLBACK_USD_TO_UAH_RATE = 41.5
 UA_CARDS_META_KEY = "topup_cards_ua"
+MAIN_MENU_PHOTO_META_KEY = "main_menu_photo_file_id"
+MAIN_MENU_PHOTO_PATH = ROOT_DIR / "главная.jpg"
 MONEY_EPSILON = 0.000001
 TG_EMOJI_RE = re.compile(r'<tg-emoji\s+emoji-id=(["\'])(\d{5,32})\1>([^<>]{0,32})</tg-emoji>')
 TG_EMOJI_START_RE = re.compile(r'^\s*<tg-emoji\s+emoji-id=(["\'])(\d{5,32})\1>([^<>]{0,32})</tg-emoji>\s*')
@@ -1304,6 +1306,48 @@ async def safe_edit(message: Message, text: str, reply_markup=None) -> None:
         await message.answer(text, reply_markup=reply_markup)
 
 
+async def safe_delete_message(message: Message | None) -> bool:
+    if not message:
+        return False
+    try:
+        await message.delete()
+        return True
+    except TelegramAPIError:
+        logger.debug("Could not delete message %s", getattr(message, "message_id", None), exc_info=True)
+        return False
+
+
+async def send_home_photo_menu(message: Message, text: str, reply_markup=None) -> Message:
+    cached_file_id = await get_app_meta(MAIN_MENU_PHOTO_META_KEY)
+    if cached_file_id:
+        try:
+            sent = await message.answer_photo(cached_file_id, caption=text, reply_markup=reply_markup)
+            if sent.photo:
+                await set_app_meta(MAIN_MENU_PHOTO_META_KEY, sent.photo[-1].file_id)
+            return sent
+        except TelegramAPIError:
+            logger.warning("Cached main menu photo file_id is not usable, sending local file", exc_info=True)
+
+    if MAIN_MENU_PHOTO_PATH.exists():
+        sent = await message.answer_photo(FSInputFile(MAIN_MENU_PHOTO_PATH), caption=text, reply_markup=reply_markup)
+        if sent.photo:
+            await set_app_meta(MAIN_MENU_PHOTO_META_KEY, sent.photo[-1].file_id)
+        return sent
+
+    logger.warning("Main menu photo not found: %s", MAIN_MENU_PHOTO_PATH)
+    return await message.answer(text, reply_markup=reply_markup)
+
+
+async def replace_with_text_menu(query: CallbackQuery, text: str, reply_markup=None) -> None:
+    message = query.message
+    if message and message.photo:
+        if await safe_delete_message(message):
+            await message.answer(text, reply_markup=reply_markup)
+            return
+    if message:
+        await safe_edit(message, text, reply_markup)
+
+
 async def edit_review_message(message: Message, text: str, reply_markup=None) -> None:
     try:
         if message.photo or message.document:
@@ -1973,9 +2017,21 @@ async def show_home(target: Message | CallbackQuery) -> None:
     )
     kb = main_menu_kb(is_admin(user_id))
     if isinstance(target, CallbackQuery):
-        await safe_edit(target.message, text, kb)
+        message = target.message
+        if message and message.photo:
+            try:
+                await message.edit_caption(caption=text, reply_markup=kb)
+                return
+            except TelegramBadRequest as exc:
+                if "message is not modified" in str(exc).lower():
+                    return
+        if message:
+            if await safe_delete_message(message):
+                await send_home_photo_menu(message, text, kb)
+                return
+            await safe_edit(message, text, kb)
     else:
-        await target.answer(text, reply_markup=kb)
+        await send_home_photo_menu(target, text, kb)
 
 
 async def show_agreement(target: Message | CallbackQuery) -> None:
@@ -2418,7 +2474,7 @@ async def menu_catalog(query: CallbackQuery):
     await ensure_known_user(query)
     await query.answer()
     text = f"{ICON_CATALOG_SECTIONS} <b>Каталог</b>\n\nВыберите раздел:"
-    await safe_edit(query.message, text, catalog_sections_keyboard())
+    await replace_with_text_menu(query, text, catalog_sections_keyboard())
 
 
 @dp.callback_query(F.data == "catalog_accounts")
@@ -2426,7 +2482,7 @@ async def catalog_accounts(query: CallbackQuery):
     await ensure_known_user(query)
     await query.answer()
     text = f"{ICON_TG_ACCOUNTS} <b>ТГ</b>\n\nВыберите страну:"
-    await safe_edit(query.message, text, catalog_home_kb(await build_country_rows()))
+    await replace_with_text_menu(query, text, catalog_home_kb(await build_country_rows()))
 
 
 @dp.callback_query(F.data == "catalog_country_search")
@@ -2856,7 +2912,7 @@ async def menu_balance(query: CallbackQuery):
     text = (
         f"{ICON_COIN} <b>Баланс:</b> {fmt_money(await get_balance(query.from_user.id))}"
     )
-    await safe_edit(query.message, text, back_to_main_kb(is_admin(query.from_user.id)))
+    await replace_with_text_menu(query, text, back_to_main_kb(is_admin(query.from_user.id)))
 
 
 async def call_crypto_pay(method: str, params: dict = None) -> dict:
@@ -2909,7 +2965,7 @@ async def user_topup_start(query: CallbackQuery, state: FSMContext):
         f"{ICON_COIN} <b>Текущий баланс:</b> {fmt_money(await get_balance(query.from_user.id))}\n\n"
         "Выберите метод пополнения:"
     )
-    await safe_edit(query.message, text, topup_methods_keyboard())
+    await replace_with_text_menu(query, text, topup_methods_keyboard())
 
 
 @dp.callback_query(F.data == "user_topup_methods")
@@ -3396,14 +3452,14 @@ async def menu_help(query: CallbackQuery):
     await ensure_known_user(query)
     await query.answer()
     text = f"{ICON_HELP} <b>Помощь</b>\n\nСвязь с поддержкой:"
-    await safe_edit(query.message, text, help_menu_kb(is_admin(query.from_user.id)))
+    await replace_with_text_menu(query, text, help_menu_kb(is_admin(query.from_user.id)))
 
 
 async def render_cart(query: CallbackQuery) -> None:
     items = await list_cart_items(query.from_user.id)
     if not items:
-        await safe_edit(
-            query.message,
+        await replace_with_text_menu(
+            query,
             f"{ICON_FOLDER} <b>Корзина</b>\n\nПока пусто.",
             cart_kb(can_checkout=False),
         )
@@ -3454,8 +3510,8 @@ async def render_cart(query: CallbackQuery) -> None:
             f"{fmt_money(float(group['total']))}{status_note}"
         )
 
-    await safe_edit(
-        query.message,
+    await replace_with_text_menu(
+        query,
         "\n".join(lines),
         cart_kb(can_checkout=True),
     )
@@ -3871,7 +3927,7 @@ async def menu_purchases(query: CallbackQuery):
     groups = await list_user_purchase_groups(query.from_user.id)
     if not groups:
         text = f"{ICON_SPARKLE} <b>Мои покупки</b>\n\nПока пусто."
-        await safe_edit(query.message, text, menu_only_kb(is_admin(query.from_user.id)))
+        await replace_with_text_menu(query, text, menu_only_kb(is_admin(query.from_user.id)))
         return
 
     total = len(groups)
@@ -3900,8 +3956,8 @@ async def menu_purchases(query: CallbackQuery):
         f"Всего заказов: <b>{total}</b>\n"
         "Выберите заказ, чтобы открыть детали."
     )
-    await safe_edit(
-        query.message,
+    await replace_with_text_menu(
+        query,
         text,
         purchases_nav_kb(purchase_rows=rows, page=page, total_pages=total_pages),
     )
@@ -5269,7 +5325,7 @@ async def admin_home(query: CallbackQuery):
     if not is_admin(query.from_user.id):
         await query.answer("Нет доступа.", show_alert=True)
         return
-    await safe_edit(query.message, "<b>Админка</b>", admin_home_kb())
+    await replace_with_text_menu(query, "<b>Админка</b>", admin_home_kb())
 
 
 def broadcast_confirm_kb() -> InlineKeyboardMarkup:
