@@ -3926,6 +3926,7 @@ async def purchase_batch_detail(query: CallbackQuery):
             )
         ])
     downloadable = sum(1 for item in purchases if product_session_file(item))
+    can_bulk_download = len(purchases) > 1 and downloadable > 1
     text = (
         f"{ICON_SPARKLE} <b>Заказ</b>\n\n"
         f"Дата: <b>{date}</b>\n"
@@ -3940,7 +3941,7 @@ async def purchase_batch_detail(query: CallbackQuery):
             batch_id=batch_id,
             page=page,
             account_rows=rows,
-            can_bulk_download=downloadable > 0,
+            can_bulk_download=can_bulk_download,
         ),
     )
 
@@ -4392,6 +4393,9 @@ async def batch_download_ask(query: CallbackQuery):
     if not downloadable:
         await query.answer("Нет доступных session-файлов.", show_alert=True)
         return
+    if len(purchases) <= 1 or len(downloadable) <= 1:
+        await query.answer("Массовая скачка доступна от 2 товаров.", show_alert=True)
+        return
 
     fmt = "session+json ZIP" if file_type == "session" else "tdata ZIP"
     text = (
@@ -4420,6 +4424,9 @@ async def batch_download(query: CallbackQuery):
     downloadable = [item for item in purchases if product_session_file(item)]
     if not downloadable:
         await query.answer("Нет доступных session-файлов.", show_alert=True)
+        return
+    if len(purchases) <= 1 or len(downloadable) <= 1:
+        await query.answer("Массовая скачка доступна от 2 товаров.", show_alert=True)
         return
 
     await query.answer("Готовлю архив...")
