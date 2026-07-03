@@ -1387,7 +1387,14 @@ def utf16_offset_to_index(text: str, offset: int) -> int:
     return len(text)
 
 
-def parse_country_name_and_icon(message: Message) -> tuple[str, str | None]:
+def split_country_flag_prefix(value: str) -> tuple[str, str | None]:
+    match = COUNTRY_FLAG_PREFIX_RE.match(value or "")
+    icon_text = "".join((match.group(0) if match else "").split()) or None
+    name = COUNTRY_FLAG_PREFIX_RE.sub("", value or "").strip()
+    return " ".join(name.split()), icon_text
+
+
+def parse_country_name_and_icon(message: Message) -> tuple[str, str | None, str | None]:
     raw_text = message.text or message.caption or ""
     custom_entities: list[tuple[int, int, str]] = []
     for entity in message.entities or message.caption_entities or []:
@@ -1401,8 +1408,8 @@ def parse_country_name_and_icon(message: Message) -> tuple[str, str | None]:
             custom_entities.append((start, end, str(emoji_id)))
 
     if not custom_entities:
-        name = COUNTRY_FLAG_PREFIX_RE.sub("", raw_text).strip()
-        return " ".join(name.split()), None
+        name, icon_text = split_country_flag_prefix(raw_text)
+        return name, None, icon_text
 
     custom_entities.sort(key=lambda item: item[0])
     chunks: list[str] = []
@@ -1413,9 +1420,22 @@ def parse_country_name_and_icon(message: Message) -> tuple[str, str | None]:
         chunks.append(raw_text[cursor:start])
         cursor = end
     chunks.append(raw_text[cursor:])
-    name = COUNTRY_FLAG_PREFIX_RE.sub("", "".join(chunks)).strip()
-    name = " ".join(name.split())
-    return name, custom_entities[0][2]
+    name, icon_text = split_country_flag_prefix("".join(chunks))
+    return name, custom_entities[0][2], icon_text
+
+
+def extract_country_icon(message: Message) -> tuple[str | None, str | None]:
+    custom_icon_id = extract_custom_emoji_id(message)
+    if custom_icon_id:
+        return custom_icon_id, None
+    _name, icon_text = split_country_flag_prefix(message.text or message.caption or "")
+    return None, icon_text
+
+
+def country_button_label(name: object, count: object | None = None, icon_text: object | None = None) -> str:
+    prefix = f"{str(icon_text).strip()} " if str(icon_text or "").strip() else ""
+    suffix = f" ({count})" if count is not None else ""
+    return f"{prefix}{name}{suffix}"
 
 
 def protect_valid_tg_emoji_markup(text: str, placeholders: dict[str, str]) -> str:
@@ -1866,7 +1886,7 @@ async def build_country_rows(search_query: str | None = None, *, page: int = 0) 
             continue
         rows.append([
             InlineKeyboardButton(
-                text=f"{row['country']} ({row['total']})",
+                text=country_button_label(row["country"], row["total"], row["icon_text"]),
                 callback_data=f"catalog_country:{row['country_id']}:0",
                 icon_custom_emoji_id=row["icon_custom_emoji_id"],
             )
@@ -1883,7 +1903,7 @@ async def build_admin_country_rows(*, page: int = 0) -> tuple[list[list[InlineKe
     for row in counts:
         rows.append([
             InlineKeyboardButton(
-                text=f"{row['country']} ({row['total']})",
+                text=country_button_label(row["country"], row["total"], row["icon_text"]),
                 callback_data=f"admin_country:{row['country_id']}",
                 icon_custom_emoji_id=row["icon_custom_emoji_id"],
             )
@@ -1973,7 +1993,7 @@ async def build_country_select_rows(flow_id: str | None = None) -> list[list[Inl
         callback_data = f"add_country:{flow_id}:{row['country_id']}" if flow_id else f"add_country:{row['country_id']}"
         rows.append([
             InlineKeyboardButton(
-                text=f"{row['name']}",
+                text=country_button_label(row["name"], icon_text=row["icon_text"]),
                 callback_data=callback_data,
                 icon_custom_emoji_id=row["icon_custom_emoji_id"],
             )
@@ -5687,6 +5707,7 @@ async def render_admin_country(message: Message, country_id: int) -> None:
     text = (
         "<b>Страна каталога</b>\n\n"
         f"Название: <b>{html.escape(country['name'])}</b>\n"
+        f"<b>Флаг:</b> {html.escape(country['icon_text'] or 'не задан')}\n"
         f"<b>Premium-флаг:</b> <code>{html.escape(country['icon_custom_emoji_id'] or 'не задан')}</code>\n"
         f"<b>В наличии:</b> {total}\n"
         f"<b>Типов товаров:</b> {len(groups)}"
@@ -6079,12 +6100,12 @@ async def admin_country_add_start(query: CallbackQuery, state: FSMContext):
 async def admin_country_add_name(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         return
-    name, icon_id = parse_country_name_and_icon(message)
+    name, icon_id, icon_text = parse_country_name_and_icon(message)
     if len(name) < 2:
         await message.answer("Добавьте название страны после флага.")
         return
     try:
-        country_id = await add_catalog_country(name, icon_id)
+        country_id = await add_catalog_country(name, icon_id, icon_text)
     except Exception as exc:
         await message.answer(f"Не удалось добавить страну: {html.escape(str(exc))}")
         return
@@ -6112,6 +6133,7 @@ async def admin_country_rename_start(query: CallbackQuery, state: FSMContext):
         rename_country_id=country_id,
         rename_country_old_name=country["name"],
         rename_country_old_icon=country["icon_custom_emoji_id"],
+        rename_country_old_icon_text=country["icon_text"],
     )
     await state.set_state(AdminCatalogStates.waiting_country_rename)
     await safe_edit(
@@ -6129,7 +6151,7 @@ async def admin_country_rename_name(message: Message, state: FSMContext):
         return
     data = await state.get_data()
     country_id = int(data.get("rename_country_id") or 0)
-    new_name, _icon_id = parse_country_name_and_icon(message)
+    new_name, _icon_id, _icon_text = parse_country_name_and_icon(message)
     new_name = " ".join(new_name.strip().split())
     if len(new_name) < 2:
         await message.answer("Название страны слишком короткое.")
@@ -6144,10 +6166,12 @@ async def admin_country_rename_name(message: Message, state: FSMContext):
     await state.update_data(rename_country_new_name=new_name)
     await state.set_state(AdminCatalogStates.waiting_country_rename_icon)
     current_icon = data.get("rename_country_old_icon") or "не задан"
+    current_icon_text = data.get("rename_country_old_icon_text") or "не задан"
     await message.answer(
-        "<b>Premium-флаг</b>\n\n"
+        "<b>Флаг</b>\n\n"
+        f"Текущий обычный флаг: {html.escape(current_icon_text)}\n"
         f"Текущий ID: <code>{html.escape(current_icon)}</code>\n\n"
-        "Отправьте новый premium emoji, HTML с <code>emoji-id</code>, сам ID.\n"
+        "Отправьте новый обычный флаг, premium emoji, HTML с <code>emoji-id</code> или сам ID.\n"
         "Чтобы оставить текущий флаг, отправьте <code>-</code>.",
         reply_markup=cancel_flow_kb("admin_catalog"),
     )
@@ -6163,12 +6187,12 @@ async def admin_country_rename_finish(message: Message, state: FSMContext):
     new_name = data.get("rename_country_new_name") or ""
     raw_text = (message.text or "").strip()
     keep_icon = raw_text == "-"
-    icon_id = None if keep_icon else extract_custom_emoji_id(message)
-    if not keep_icon and not icon_id:
-        await message.answer("Не вижу premium emoji ID. Отправьте premium emoji, HTML с <code>emoji-id</code>, сам ID или <code>-</code>.")
+    icon_id, icon_text = (None, None) if keep_icon else extract_country_icon(message)
+    if not keep_icon and not (icon_id or icon_text):
+        await message.answer("Не вижу флаг. Отправьте обычный флаг, premium emoji, HTML с <code>emoji-id</code>, сам ID или <code>-</code>.")
         return
     try:
-        ok = await rename_catalog_country(country_id, new_name, icon_id, keep_icon=keep_icon)
+        ok = await rename_catalog_country(country_id, new_name, icon_id, icon_text, keep_icon=keep_icon)
     except Exception as exc:
         await state.clear()
         await message.answer(

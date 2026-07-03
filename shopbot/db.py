@@ -105,6 +105,7 @@ async def init_db() -> None:
                 country_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL UNIQUE,
                 icon_custom_emoji_id TEXT,
+                icon_text TEXT,
                 is_active INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL
             );
@@ -212,11 +213,14 @@ async def init_db() -> None:
         if "icon_custom_emoji_id" not in catalog_country_columns:
             await db.execute("ALTER TABLE catalog_countries ADD COLUMN icon_custom_emoji_id TEXT")
             logger.info("Добавлена колонка icon_custom_emoji_id в таблицу catalog_countries")
+        if "icon_text" not in catalog_country_columns:
+            await db.execute("ALTER TABLE catalog_countries ADD COLUMN icon_text TEXT")
+            logger.info("Добавлена колонка icon_text в таблицу catalog_countries")
 
         await db.execute(
             """
-            INSERT INTO catalog_countries (name, icon_custom_emoji_id, is_active, created_at)
-            SELECT DISTINCT country, NULL, 1, ?
+            INSERT INTO catalog_countries (name, icon_custom_emoji_id, icon_text, is_active, created_at)
+            SELECT DISTINCT country, NULL, NULL, 1, ?
             FROM products
             WHERE TRIM(country) != ''
             ON CONFLICT(name) DO NOTHING
@@ -688,11 +692,11 @@ async def list_country_counts():
     async with get_db_conn() as db:
         async with db.execute(
             """
-            SELECT c.country_id, c.name AS country, c.icon_custom_emoji_id, COUNT(p.product_id) AS total
+            SELECT c.country_id, c.name AS country, c.icon_custom_emoji_id, c.icon_text, COUNT(p.product_id) AS total
             FROM catalog_countries c
             LEFT JOIN products p ON p.country = c.name AND p.status = 'available'
             WHERE c.is_active = 1
-            GROUP BY c.country_id, c.name, c.icon_custom_emoji_id, c.created_at
+            GROUP BY c.country_id, c.name, c.icon_custom_emoji_id, c.icon_text, c.created_at
             ORDER BY c.created_at ASC, c.country_id ASC
             """
         ) as cursor:
@@ -765,22 +769,30 @@ async def get_catalog_department(department_id: int):
             return await cursor.fetchone()
 
 
-async def add_catalog_country(name: str, icon_custom_emoji_id: str | None = None) -> int:
+async def add_catalog_country(name: str, icon_custom_emoji_id: str | None = None, icon_text: str | None = None) -> int:
     normalized = " ".join((name or "").strip().split())
     if len(normalized) < 2:
         raise ValueError("Название страны слишком короткое.")
     icon_id = (icon_custom_emoji_id or "").strip() or None
+    text_icon = (icon_text or "").strip() or None
     async with get_db_conn() as db:
         async with db.execute(
             """
-            INSERT INTO catalog_countries (name, icon_custom_emoji_id, is_active, created_at)
-            VALUES (?, ?, 1, ?)
+            INSERT INTO catalog_countries (name, icon_custom_emoji_id, icon_text, is_active, created_at)
+            VALUES (?, ?, ?, 1, ?)
             ON CONFLICT(name) DO UPDATE SET
                 is_active = 1,
-                icon_custom_emoji_id = COALESCE(excluded.icon_custom_emoji_id, catalog_countries.icon_custom_emoji_id)
+                icon_custom_emoji_id = CASE
+                    WHEN excluded.icon_text IS NOT NULL THEN NULL
+                    ELSE COALESCE(excluded.icon_custom_emoji_id, catalog_countries.icon_custom_emoji_id)
+                END,
+                icon_text = CASE
+                    WHEN excluded.icon_custom_emoji_id IS NOT NULL THEN NULL
+                    ELSE COALESCE(excluded.icon_text, catalog_countries.icon_text)
+                END
             RETURNING country_id
             """,
-            (normalized, icon_id, utcnow()),
+            (normalized, icon_id, text_icon, utcnow()),
         ) as cursor:
             row = await cursor.fetchone()
             country_id = int(row["country_id"])
@@ -798,11 +810,19 @@ async def remove_catalog_country(country_id: int) -> bool:
         return cursor.rowcount > 0
 
 
-async def rename_catalog_country(country_id: int, new_name: str, icon_custom_emoji_id: str | None = None, *, keep_icon: bool = True) -> bool:
+async def rename_catalog_country(
+    country_id: int,
+    new_name: str,
+    icon_custom_emoji_id: str | None = None,
+    icon_text: str | None = None,
+    *,
+    keep_icon: bool = True,
+) -> bool:
     normalized = " ".join((new_name or "").strip().split())
     if len(normalized) < 2:
         raise ValueError("Название страны слишком короткое.")
     icon_id = (icon_custom_emoji_id or "").strip() or None
+    text_icon = (icon_text or "").strip() or None
     async with get_db_conn() as db:
         await db.execute("BEGIN IMMEDIATE")
         async with db.execute(
@@ -822,8 +842,8 @@ async def rename_catalog_country(country_id: int, new_name: str, icon_custom_emo
                 )
             else:
                 cursor = await db.execute(
-                    "UPDATE catalog_countries SET name = ?, icon_custom_emoji_id = ? WHERE country_id = ?",
-                    (normalized, icon_id, country_id),
+                    "UPDATE catalog_countries SET name = ?, icon_custom_emoji_id = ?, icon_text = ? WHERE country_id = ?",
+                    (normalized, icon_id, text_icon, country_id),
                 )
             await db.execute("UPDATE products SET country = ? WHERE country = ?", (normalized, old_name))
             await db.commit()
