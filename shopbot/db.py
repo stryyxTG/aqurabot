@@ -776,28 +776,54 @@ async def add_catalog_country(name: str, icon_custom_emoji_id: str | None = None
     icon_id = (icon_custom_emoji_id or "").strip() or None
     text_icon = (icon_text or "").strip() or None
     async with get_db_conn() as db:
+        now = utcnow()
         async with db.execute(
-            """
-            INSERT INTO catalog_countries (name, icon_custom_emoji_id, icon_text, is_active, created_at)
-            VALUES (?, ?, ?, 1, ?)
-            ON CONFLICT(name) DO UPDATE SET
-                is_active = 1,
-                icon_custom_emoji_id = CASE
-                    WHEN excluded.icon_text IS NOT NULL THEN NULL
-                    ELSE COALESCE(excluded.icon_custom_emoji_id, catalog_countries.icon_custom_emoji_id)
-                END,
-                icon_text = CASE
-                    WHEN excluded.icon_custom_emoji_id IS NOT NULL THEN NULL
-                    ELSE COALESCE(excluded.icon_text, catalog_countries.icon_text)
-                END
-            RETURNING country_id
-            """,
-            (normalized, icon_id, text_icon, utcnow()),
+            "SELECT country_id FROM catalog_countries WHERE name = ?",
+            (normalized,),
         ) as cursor:
-            row = await cursor.fetchone()
-            country_id = int(row["country_id"])
-            await db.commit()
-            return country_id
+            existing = await cursor.fetchone()
+        if existing:
+            country_id = int(existing["country_id"])
+            if icon_id:
+                await db.execute(
+                    """
+                    UPDATE catalog_countries
+                    SET is_active = 1, icon_custom_emoji_id = ?, icon_text = NULL, created_at = ?
+                    WHERE country_id = ?
+                    """,
+                    (icon_id, now, country_id),
+                )
+            elif text_icon:
+                await db.execute(
+                    """
+                    UPDATE catalog_countries
+                    SET is_active = 1, icon_custom_emoji_id = NULL, icon_text = ?, created_at = ?
+                    WHERE country_id = ?
+                    """,
+                    (text_icon, now, country_id),
+                )
+            else:
+                await db.execute(
+                    """
+                    UPDATE catalog_countries
+                    SET is_active = 1, created_at = ?
+                    WHERE country_id = ?
+                    """,
+                    (now, country_id),
+                )
+        else:
+            async with db.execute(
+                """
+                INSERT INTO catalog_countries (name, icon_custom_emoji_id, icon_text, is_active, created_at)
+                VALUES (?, ?, ?, 1, ?)
+                RETURNING country_id
+                """,
+                (normalized, icon_id, text_icon, now),
+            ) as cursor:
+                row = await cursor.fetchone()
+                country_id = int(row["country_id"])
+        await db.commit()
+        return country_id
 
 
 async def remove_catalog_country(country_id: int) -> bool:
