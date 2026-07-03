@@ -225,6 +225,7 @@ FEATURE_TOPUP_CRYPTO = True
 FEATURE_TOPUP_OTHER = False
 FEATURE_CATALOG_PREMIUM = False
 FEATURE_CATALOG_STARS = False
+COUNTRY_PAGE_SIZE = 7
 MIN_CRYPTO_TOPUP_AMOUNT = 0.1
 FALLBACK_USD_TO_UAH_RATE = 41.5
 UA_CARDS_META_KEY = "topup_cards_ua"
@@ -267,6 +268,7 @@ ICON_NOTICE = '<tg-emoji emoji-id="6030563507299160824">❗️</tg-emoji>'
 bot = Bot(settings.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML, link_preview_is_disabled=True))
 dp = Dispatcher(storage=MemoryStorage())
 session_manager = ShopSessionManager(settings)
+country_search_cache: dict[int, str] = {}
 
 
 def topup_methods_keyboard() -> InlineKeyboardMarkup:
@@ -1850,8 +1852,13 @@ def normalize_country_search(value: object) -> str:
     return " ".join(str(value or "").casefold().split())
 
 
-async def build_country_rows(search_query: str | None = None) -> list[list[InlineKeyboardButton]]:
-    rows = []
+def clamp_page(page: int, total_items: int, page_size: int) -> tuple[int, int]:
+    total_pages = max(1, math.ceil(max(total_items, 0) / max(page_size, 1)))
+    return min(max(0, page), total_pages - 1), total_pages
+
+
+async def build_country_rows(search_query: str | None = None, *, page: int = 0) -> tuple[list[list[InlineKeyboardButton]], int, int, int]:
+    rows: list[list[InlineKeyboardButton]] = []
     counts = await list_country_counts()
     query = normalize_country_search(search_query)
     for row in counts:
@@ -1864,11 +1871,14 @@ async def build_country_rows(search_query: str | None = None) -> list[list[Inlin
                 icon_custom_emoji_id=row["icon_custom_emoji_id"],
             )
         ])
-    return rows
+    total = len(rows)
+    page, total_pages = clamp_page(page, total, COUNTRY_PAGE_SIZE)
+    start = page * COUNTRY_PAGE_SIZE
+    return rows[start:start + COUNTRY_PAGE_SIZE], page, total_pages, total
 
 
-async def build_admin_country_rows() -> list[list[InlineKeyboardButton]]:
-    rows = []
+async def build_admin_country_rows(*, page: int = 0) -> tuple[list[list[InlineKeyboardButton]], int, int, int]:
+    rows: list[list[InlineKeyboardButton]] = []
     counts = await list_country_counts()
     for row in counts:
         rows.append([
@@ -1878,7 +1888,20 @@ async def build_admin_country_rows() -> list[list[InlineKeyboardButton]]:
                 icon_custom_emoji_id=row["icon_custom_emoji_id"],
             )
         ])
-    return rows
+    total = len(rows)
+    page, total_pages = clamp_page(page, total, COUNTRY_PAGE_SIZE)
+    start = page * COUNTRY_PAGE_SIZE
+    return rows[start:start + COUNTRY_PAGE_SIZE], page, total_pages, total
+
+
+async def build_catalog_home_kb(*, page: int = 0, search_query: str | None = None, page_prefix: str = "catalog_accounts") -> InlineKeyboardMarkup:
+    rows, page, total_pages, _total = await build_country_rows(search_query, page=page)
+    return catalog_home_kb(rows, page=page, total_pages=total_pages, page_prefix=page_prefix)
+
+
+async def build_admin_catalog_keyboard(*, page: int = 0) -> InlineKeyboardMarkup:
+    rows, page, total_pages, _total = await build_admin_country_rows(page=page)
+    return admin_catalog_kb(rows, page=page, total_pages=total_pages)
 
 
 async def catalog_country_name_exists(name: str, *, except_country_id: int | None = None) -> bool:
@@ -2496,11 +2519,18 @@ async def menu_catalog(query: CallbackQuery):
 
 
 @dp.callback_query(F.data == "catalog_accounts")
+@dp.callback_query(F.data.startswith("catalog_accounts:"))
 async def catalog_accounts(query: CallbackQuery):
     await ensure_known_user(query)
     await query.answer()
+    page = 0
+    if ":" in (query.data or ""):
+        try:
+            page = max(0, int((query.data or "").rsplit(":", 1)[1]))
+        except ValueError:
+            page = 0
     text = f"{ICON_TG_ACCOUNTS} <b>ТГ</b>\n\nВыберите страну:"
-    await replace_with_text_menu(query, text, catalog_home_kb(await build_country_rows()))
+    await replace_with_text_menu(query, text, await build_catalog_home_kb(page=page))
 
 
 @dp.callback_query(F.data == "catalog_country_search")
@@ -2523,9 +2553,9 @@ async def catalog_country_search_finish(message: Message, state: FSMContext):
         await message.answer("Введите название страны или часть названия.", reply_markup=cancel_flow_kb("catalog_accounts"))
         return
 
-    rows = await build_country_rows(query_text)
+    rows, page, total_pages, total = await build_country_rows(query_text, page=0)
     await state.clear()
-    if not rows:
+    if not total:
         await message.answer(
             f"{ICON_BLOCK} <b>Страна не найдена</b>\n\n"
             f"Запрос: <code>{html.escape(query_text)}</code>",
@@ -2533,11 +2563,34 @@ async def catalog_country_search_finish(message: Message, state: FSMContext):
         )
         return
 
+    country_search_cache[message.from_user.id] = query_text
     await message.answer(
         f"{ICON_TG_ACCOUNTS} <b>Результаты поиска</b>\n\n"
         f"Запрос: <code>{html.escape(query_text)}</code>\n"
-        f"Найдено: <b>{len(rows)}</b>",
-        reply_markup=catalog_home_kb(rows),
+        f"Найдено: <b>{total}</b>",
+        reply_markup=catalog_home_kb(rows, page=page, total_pages=total_pages, page_prefix="catalog_country_search_page"),
+    )
+
+
+@dp.callback_query(F.data.startswith("catalog_country_search_page:"))
+async def catalog_country_search_page(query: CallbackQuery):
+    await ensure_known_user(query)
+    query_text = country_search_cache.get(query.from_user.id, "")
+    if not query_text:
+        await query.answer("Поиск устарел. Введите запрос заново.", show_alert=True)
+        return
+    try:
+        page = max(0, int((query.data or "").rsplit(":", 1)[1]))
+    except ValueError:
+        page = 0
+    rows, page, total_pages, total = await build_country_rows(query_text, page=page)
+    await query.answer()
+    await safe_edit(
+        query.message,
+        f"{ICON_TG_ACCOUNTS} <b>Результаты поиска</b>\n\n"
+        f"Запрос: <code>{html.escape(query_text)}</code>\n"
+        f"Найдено: <b>{total}</b>",
+        catalog_home_kb(rows, page=page, total_pages=total_pages, page_prefix="catalog_country_search_page"),
     )
 
 
@@ -5594,23 +5647,30 @@ async def admin_reset_stats_confirm(query: CallbackQuery):
 
 
 @dp.callback_query(F.data == "admin_catalog")
+@dp.callback_query(F.data.startswith("admin_catalog:"))
 async def admin_catalog(query: CallbackQuery):
     await ensure_known_user(query)
     await query.answer()
     if not is_admin(query.from_user.id):
         return
+    page = 0
+    if ":" in (query.data or ""):
+        try:
+            page = max(0, int((query.data or "").rsplit(":", 1)[1]))
+        except ValueError:
+            page = 0
     text = (
         "<b>Страны каталога</b>\n\n"
         "Эти страны показываются в каталоге отдельными кнопками. "
         "При добавлении новый товар можно положить в одну из них."
     )
-    await safe_edit(query.message, text, admin_catalog_kb(await build_admin_country_rows()))
+    await safe_edit(query.message, text, await build_admin_catalog_keyboard(page=page))
 
 
 async def render_admin_country(message: Message, country_id: int) -> None:
     country = await get_catalog_country(country_id)
     if not country:
-        await safe_edit(message, "Кнопка страны не найдена.", admin_catalog_kb(await build_admin_country_rows()))
+        await safe_edit(message, "Кнопка страны не найдена.", await build_admin_catalog_keyboard())
         return
     total = await count_products(country=country["name"])
     groups = await list_product_departments(country=country["name"], limit=20)
@@ -5983,7 +6043,7 @@ async def admin_edit_group_new_value(message: Message, state: FSMContext):
     changed = await update_product_group_info(sample_product_id, **{field: value})
     await state.clear()
     if changed <= 0:
-        await message.answer("Тип товара не найден или уже закончился.", reply_markup=admin_catalog_kb(await build_admin_country_rows()))
+        await message.answer("Тип товара не найден или уже закончился.", reply_markup=await build_admin_catalog_keyboard())
         return
     group = await get_product_department(sample_product_id)
     await log_purchase("admin_action", action=f"Обновлен тип товара sample #{sample_product_id}, поле {field}, товаров: {changed}", admin_id=message.from_user.id)
@@ -6033,7 +6093,7 @@ async def admin_country_add_name(message: Message, state: FSMContext):
     await log_purchase("admin_action", action=f"Добавлена страна: {country['name']}", admin_id=message.from_user.id)
     await message.answer(
         f"Страна добавлена: <b>{html.escape(country['name'])}</b>",
-        reply_markup=admin_catalog_kb(await build_admin_country_rows()),
+        reply_markup=await build_admin_catalog_keyboard(),
     )
 
 
@@ -6113,17 +6173,17 @@ async def admin_country_rename_finish(message: Message, state: FSMContext):
         await state.clear()
         await message.answer(
             f"Не удалось переименовать страну: {html.escape(str(exc))}",
-            reply_markup=admin_catalog_kb(await build_admin_country_rows()),
+            reply_markup=await build_admin_catalog_keyboard(),
         )
         return
     await state.clear()
     if not ok:
-        await message.answer("Кнопка страны не найдена.", reply_markup=admin_catalog_kb(await build_admin_country_rows()))
+        await message.answer("Кнопка страны не найдена.", reply_markup=await build_admin_catalog_keyboard())
         return
     await log_purchase("admin_action", action=f"Переименована страна: {old_name} -> {new_name}", admin_id=message.from_user.id)
     await message.answer(
         f"Страна переименована: <b>{html.escape(old_name)}</b> → <b>{html.escape(new_name)}</b>",
-        reply_markup=admin_catalog_kb(await build_admin_country_rows()),
+        reply_markup=await build_admin_catalog_keyboard(),
     )
 
 
@@ -6175,7 +6235,7 @@ async def admin_country_remove(query: CallbackQuery):
         await query.answer("Кнопка убрана из каталога.")
     else:
         await query.answer("Не удалось убрать кнопку.", show_alert=True)
-    await safe_edit(query.message, "<b>Страны каталога</b>", admin_catalog_kb(await build_admin_country_rows()))
+    await safe_edit(query.message, "<b>Страны каталога</b>", await build_admin_catalog_keyboard())
 
 
 @dp.callback_query(F.data == "admin_proxy")
@@ -7833,12 +7893,12 @@ async def cancel_flow(query: CallbackQuery, state: FSMContext):
     if back_callback == "admin_home":
         await safe_edit(query.message, "<b>Админка</b>", admin_home_kb())
     elif back_callback == "admin_catalog":
-        await safe_edit(query.message, "<b>Страны каталога</b>", admin_catalog_kb(await build_admin_country_rows()))
+        await safe_edit(query.message, "<b>Страны каталога</b>", await build_admin_catalog_keyboard())
     elif back_callback.startswith("admin_country:"):
         try:
             country_id = int(back_callback.rsplit(":", 1)[1])
         except ValueError:
-            await safe_edit(query.message, "<b>Страны каталога</b>", admin_catalog_kb(await build_admin_country_rows()))
+            await safe_edit(query.message, "<b>Страны каталога</b>", await build_admin_catalog_keyboard())
         else:
             await render_admin_country(query.message, country_id)
     elif back_callback == "admin_proxy":
@@ -7861,7 +7921,7 @@ async def cancel_flow(query: CallbackQuery, state: FSMContext):
     elif back_callback == "menu_catalog":
         await safe_edit(query.message, f"{ICON_CATALOG_SECTIONS} <b>Каталог</b>\n\nВыберите раздел:", catalog_sections_keyboard())
     elif back_callback == "catalog_accounts":
-        await safe_edit(query.message, f"{ICON_TG_ACCOUNTS} <b>ТГ</b>\n\nВыберите страну:", catalog_home_kb(await build_country_rows()))
+        await safe_edit(query.message, f"{ICON_TG_ACCOUNTS} <b>ТГ</b>\n\nВыберите страну:", await build_catalog_home_kb())
     elif back_callback == "user_topup_methods":
         await safe_edit(
             query.message,

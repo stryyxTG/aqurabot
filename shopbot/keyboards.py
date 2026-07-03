@@ -260,8 +260,23 @@ def drop_manage_kb(user_id: int) -> InlineKeyboardMarkup:
     )
 
 
-def catalog_home_kb(country_rows: list[list[InlineKeyboardButton]]) -> InlineKeyboardMarkup:
+def catalog_home_kb(
+    country_rows: list[list[InlineKeyboardButton]],
+    *,
+    page: int = 0,
+    total_pages: int = 1,
+    page_prefix: str = "catalog_accounts",
+) -> InlineKeyboardMarkup:
     rows = list(country_rows)
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="<", callback_data=f"{page_prefix}:{page - 1}"))
+    if total_pages > 1:
+        nav.append(InlineKeyboardButton(text=f"{page + 1}/{max(total_pages, 1)}", callback_data="noop"))
+    if page + 1 < total_pages:
+        nav.append(InlineKeyboardButton(text=">", callback_data=f"{page_prefix}:{page + 1}"))
+    if nav:
+        rows.append(nav)
     rows.append([InlineKeyboardButton(text="Поиск", callback_data="catalog_country_search")])
     rows.append([InlineKeyboardButton(text="Назад", callback_data="menu_catalog", icon_custom_emoji_id=BTN_ICON_BACK)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -496,8 +511,22 @@ def admin_scan_confirm_kb() -> InlineKeyboardMarkup:
     )
 
 
-def admin_catalog_kb(country_rows: list[list[InlineKeyboardButton]]) -> InlineKeyboardMarkup:
+def admin_catalog_kb(
+    country_rows: list[list[InlineKeyboardButton]],
+    *,
+    page: int = 0,
+    total_pages: int = 1,
+) -> InlineKeyboardMarkup:
     rows = list(country_rows)
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="<", callback_data=f"admin_catalog:{page - 1}"))
+    if total_pages > 1:
+        nav.append(InlineKeyboardButton(text=f"{page + 1}/{max(total_pages, 1)}", callback_data="noop"))
+    if page + 1 < total_pages:
+        nav.append(InlineKeyboardButton(text=">", callback_data=f"admin_catalog:{page + 1}"))
+    if nav:
+        rows.append(nav)
     rows.append([InlineKeyboardButton(text="Добавить регион", callback_data="admin_country_add")])
     rows.append([InlineKeyboardButton(text="Назад", callback_data="admin_home", icon_custom_emoji_id=BTN_ICON_BACK)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
