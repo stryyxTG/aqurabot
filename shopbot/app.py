@@ -6104,6 +6104,13 @@ async def admin_country_add_name(message: Message, state: FSMContext):
     if len(name) < 2:
         await message.answer("Добавьте название страны после флага.")
         return
+    if await catalog_country_name_exists(name):
+        await message.answer(
+            f"Страна <b>{html.escape(name)}</b> уже есть в каталоге.\n\n"
+            "Добавление не меняет флаг существующей страны. Для изменения используйте переименование.",
+            reply_markup=cancel_flow_kb("admin_catalog"),
+        )
+        return
     try:
         country_id = await add_catalog_country(name, icon_id, icon_text)
     except Exception as exc:

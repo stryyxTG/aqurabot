@@ -778,12 +778,14 @@ async def add_catalog_country(name: str, icon_custom_emoji_id: str | None = None
     async with get_db_conn() as db:
         now = utcnow()
         async with db.execute(
-            "SELECT country_id FROM catalog_countries WHERE name = ?",
+            "SELECT country_id, is_active FROM catalog_countries WHERE name = ?",
             (normalized,),
         ) as cursor:
             existing = await cursor.fetchone()
         if existing:
             country_id = int(existing["country_id"])
+            if int(existing["is_active"] or 0):
+                raise ValueError("Страна уже есть в каталоге.")
             if icon_id:
                 await db.execute(
                     """
