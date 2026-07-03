@@ -233,6 +233,7 @@ MAIN_MENU_PHOTO_PATH = ROOT_DIR / "главная.jpg"
 MONEY_EPSILON = 0.000001
 TG_EMOJI_RE = re.compile(r'<tg-emoji\s+emoji-id=(["\'])(\d{5,32})\1>([^<>]{0,32})</tg-emoji>')
 TG_EMOJI_START_RE = re.compile(r'^\s*<tg-emoji\s+emoji-id=(["\'])(\d{5,32})\1>([^<>]{0,32})</tg-emoji>\s*')
+COUNTRY_FLAG_PREFIX_RE = re.compile(r"^\s*(?:[\U0001F1E6-\U0001F1FF]{2}\s*)+")
 ICON_SHOP = '<tg-emoji emoji-id="5920332557466997677">🏪</tg-emoji>'
 ICON_COIN = '<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji>'
 ICON_TAG = '<tg-emoji emoji-id="5890883384057533697">🏷</tg-emoji>'
@@ -1398,7 +1399,8 @@ def parse_country_name_and_icon(message: Message) -> tuple[str, str | None]:
             custom_entities.append((start, end, str(emoji_id)))
 
     if not custom_entities:
-        return " ".join(raw_text.strip().split()), None
+        name = COUNTRY_FLAG_PREFIX_RE.sub("", raw_text).strip()
+        return " ".join(name.split()), None
 
     custom_entities.sort(key=lambda item: item[0])
     chunks: list[str] = []
@@ -1409,7 +1411,8 @@ def parse_country_name_and_icon(message: Message) -> tuple[str, str | None]:
         chunks.append(raw_text[cursor:start])
         cursor = end
     chunks.append(raw_text[cursor:])
-    name = " ".join("".join(chunks).strip().split())
+    name = COUNTRY_FLAG_PREFIX_RE.sub("", "".join(chunks)).strip()
+    name = " ".join(name.split())
     return name, custom_entities[0][2]
 
 
@@ -1876,6 +1879,21 @@ async def build_admin_country_rows() -> list[list[InlineKeyboardButton]]:
             )
         ])
     return rows
+
+
+async def catalog_country_name_exists(name: str, *, except_country_id: int | None = None) -> bool:
+    normalized = " ".join((name or "").strip().split())
+    if not normalized:
+        return False
+    normalized_folded = normalized.casefold()
+    for country in await list_catalog_countries(include_inactive=True):
+        country_id = int(country["country_id"])
+        if except_country_id is not None and country_id == int(except_country_id):
+            continue
+        existing_name = str(country["name"] or "")
+        if existing_name == normalized or existing_name.casefold() == normalized_folded:
+            return True
+    return False
 
 
 def make_add_flow_id() -> str:
@@ -6050,9 +6068,18 @@ async def admin_country_rename_name(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         return
     data = await state.get_data()
-    new_name = " ".join((message.text or "").strip().split())
+    country_id = int(data.get("rename_country_id") or 0)
+    new_name, _icon_id = parse_country_name_and_icon(message)
+    new_name = " ".join(new_name.strip().split())
     if len(new_name) < 2:
         await message.answer("Название страны слишком короткое.")
+        return
+    if await catalog_country_name_exists(new_name, except_country_id=country_id):
+        await message.answer(
+            f"Страна <b>{html.escape(new_name)}</b> уже есть в каталоге.\n\n"
+            "Отправьте другое название или нажмите «Отменить».",
+            reply_markup=cancel_flow_kb("admin_catalog"),
+        )
         return
     await state.update_data(rename_country_new_name=new_name)
     await state.set_state(AdminCatalogStates.waiting_country_rename_icon)
@@ -6083,7 +6110,11 @@ async def admin_country_rename_finish(message: Message, state: FSMContext):
     try:
         ok = await rename_catalog_country(country_id, new_name, icon_id, keep_icon=keep_icon)
     except Exception as exc:
-        await message.answer(f"Не удалось переименовать страну: {html.escape(str(exc))}")
+        await state.clear()
+        await message.answer(
+            f"Не удалось переименовать страну: {html.escape(str(exc))}",
+            reply_markup=admin_catalog_kb(await build_admin_country_rows()),
+        )
         return
     await state.clear()
     if not ok:
