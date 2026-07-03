@@ -692,8 +692,8 @@ async def list_country_counts():
             FROM catalog_countries c
             LEFT JOIN products p ON p.country = c.name AND p.status = 'available'
             WHERE c.is_active = 1
-            GROUP BY c.country_id, c.name, c.icon_custom_emoji_id
-            ORDER BY c.name COLLATE NOCASE
+            GROUP BY c.country_id, c.name, c.icon_custom_emoji_id, c.created_at
+            ORDER BY c.created_at ASC, c.country_id ASC
             """
         ) as cursor:
             return await cursor.fetchall()
@@ -703,7 +703,7 @@ async def list_catalog_countries(*, include_inactive: bool = False):
     query = "SELECT * FROM catalog_countries"
     if not include_inactive:
         query += " WHERE is_active = 1"
-    query += " ORDER BY name COLLATE NOCASE"
+    query += " ORDER BY created_at ASC, country_id ASC"
     async with get_db_conn() as db:
         async with db.execute(query) as cursor:
             return await cursor.fetchall()
