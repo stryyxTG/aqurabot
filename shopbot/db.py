@@ -659,13 +659,24 @@ async def search_products(query: str, limit: int = 20):
     value = (query or "").strip()
     if not value:
         return []
+    phone_digits = "".join(ch for ch in value if ch.isdigit())
+    normalized_phone_sql = (
+        "replace(replace(replace(replace(replace(replace(replace(replace("
+        "replace(replace(COALESCE(phone, ''), '+', ''), ' ', ''), '-', ''), "
+        "'(', ''), ')', ''), '.', ''), CHAR(9), ''), CHAR(10), ''), CHAR(13), ''), "
+        "'\u00a0', '')"
+    )
     phone_like = f"%{value}%"
     args: list[object] = []
     conditions = ["phone LIKE ?"]
     args.append(phone_like)
+    if phone_digits:
+        conditions.append(f"{normalized_phone_sql} LIKE ?")
+        args.append(f"%{phone_digits}%")
     if value.isdigit():
         conditions.insert(0, "product_id = ?")
         args.insert(0, int(value))
+    exact_product_id = int(value) if value.isdigit() else -1
     async with get_db_conn() as db:
         async with db.execute(
             f"""
@@ -677,7 +688,7 @@ async def search_products(query: str, limit: int = 20):
                 product_id DESC
             LIMIT ?
             """,
-            tuple(args + [int(value) if value.isdigit() else -1, limit]),
+            tuple(args + [exact_product_id, limit]),
         ) as cursor:
             return await cursor.fetchall()
 
