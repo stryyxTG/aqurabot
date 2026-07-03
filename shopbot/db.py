@@ -806,7 +806,7 @@ async def add_catalog_country(name: str, icon_custom_emoji_id: str | None = None
                 await db.execute(
                     """
                     UPDATE catalog_countries
-                    SET is_active = 1, created_at = ?
+                    SET is_active = 1, icon_custom_emoji_id = NULL, icon_text = NULL, created_at = ?
                     WHERE country_id = ?
                     """,
                     (now, country_id),

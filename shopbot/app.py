@@ -6141,7 +6141,7 @@ async def admin_country_rename_start(query: CallbackQuery, state: FSMContext):
         "<b>Переименовать страну</b>\n\n"
         f"Сейчас: <b>{html.escape(country['name'])}</b>\n"
         "Отправьте новое название с флагом или без него.\n\n"
-        "Если флаг не указать, текущий флаг останется.",
+        "Если флаг не указать, страна будет без флага.",
         cancel_flow_kb("admin_catalog"),
     )
 
@@ -6165,9 +6165,8 @@ async def admin_country_rename_name(message: Message, state: FSMContext):
             reply_markup=cancel_flow_kb("admin_catalog"),
         )
         return
-    keep_icon = not (icon_id or icon_text)
     try:
-        ok = await rename_catalog_country(country_id, new_name, icon_id, icon_text, keep_icon=keep_icon)
+        ok = await rename_catalog_country(country_id, new_name, icon_id, icon_text, keep_icon=False)
     except Exception as exc:
         await state.clear()
         await message.answer(
