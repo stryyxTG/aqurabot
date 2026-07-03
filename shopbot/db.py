@@ -861,6 +861,55 @@ async def rename_catalog_country(
             return False
         old_name = row["name"]
         try:
+            async with db.execute(
+                "SELECT country_id, is_active FROM catalog_countries WHERE name = ? AND country_id != ?",
+                (normalized, country_id),
+            ) as cursor:
+                name_conflict = await cursor.fetchone()
+            if name_conflict:
+                conflict_country_id = int(name_conflict["country_id"])
+                if int(name_conflict["is_active"] or 0):
+                    raise ValueError("Такая страна уже есть в каталоге.")
+                now = utcnow()
+                if keep_icon:
+                    await db.execute(
+                        """
+                        UPDATE catalog_countries
+                        SET is_active = 1, created_at = ?
+                        WHERE country_id = ?
+                        """,
+                        (now, conflict_country_id),
+                    )
+                elif icon_id:
+                    await db.execute(
+                        """
+                        UPDATE catalog_countries
+                        SET is_active = 1, icon_custom_emoji_id = ?, icon_text = NULL, created_at = ?
+                        WHERE country_id = ?
+                        """,
+                        (icon_id, now, conflict_country_id),
+                    )
+                else:
+                    await db.execute(
+                        """
+                        UPDATE catalog_countries
+                        SET is_active = 1, icon_custom_emoji_id = NULL, icon_text = ?, created_at = ?
+                        WHERE country_id = ?
+                        """,
+                        (text_icon, now, conflict_country_id),
+                    )
+                await db.execute(
+                    "UPDATE OR IGNORE catalog_departments SET country_id = ? WHERE country_id = ?",
+                    (conflict_country_id, country_id),
+                )
+                await db.execute(
+                    "UPDATE catalog_countries SET is_active = 0 WHERE country_id = ?",
+                    (country_id,),
+                )
+                await db.execute("UPDATE products SET country = ? WHERE country = ?", (normalized, old_name))
+                await db.commit()
+                return True
+
             if keep_icon:
                 cursor = await db.execute(
                     "UPDATE catalog_countries SET name = ? WHERE country_id = ?",

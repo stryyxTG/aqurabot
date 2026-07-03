@@ -1929,7 +1929,7 @@ async def catalog_country_name_exists(name: str, *, except_country_id: int | Non
     if not normalized:
         return False
     normalized_folded = normalized.casefold()
-    for country in await list_catalog_countries(include_inactive=True):
+    for country in await list_catalog_countries():
         country_id = int(country["country_id"])
         if except_country_id is not None and country_id == int(except_country_id):
             continue
