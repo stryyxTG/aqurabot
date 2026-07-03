@@ -6140,7 +6140,8 @@ async def admin_country_rename_start(query: CallbackQuery, state: FSMContext):
         query.message,
         "<b>Переименовать страну</b>\n\n"
         f"Сейчас: <b>{html.escape(country['name'])}</b>\n"
-        "Отправьте новое название без флага.",
+        "Отправьте новое название с флагом или без него.\n\n"
+        "Если флаг не указать, текущий флаг останется.",
         cancel_flow_kb("admin_catalog"),
     )
 
@@ -6151,7 +6152,8 @@ async def admin_country_rename_name(message: Message, state: FSMContext):
         return
     data = await state.get_data()
     country_id = int(data.get("rename_country_id") or 0)
-    new_name, _icon_id, _icon_text = parse_country_name_and_icon(message)
+    old_name = data.get("rename_country_old_name") or ""
+    new_name, icon_id, icon_text = parse_country_name_and_icon(message)
     new_name = " ".join(new_name.strip().split())
     if len(new_name) < 2:
         await message.answer("Название страны слишком короткое.")
@@ -6163,17 +6165,24 @@ async def admin_country_rename_name(message: Message, state: FSMContext):
             reply_markup=cancel_flow_kb("admin_catalog"),
         )
         return
-    await state.update_data(rename_country_new_name=new_name)
-    await state.set_state(AdminCatalogStates.waiting_country_rename_icon)
-    current_icon = data.get("rename_country_old_icon") or "не задан"
-    current_icon_text = data.get("rename_country_old_icon_text") or "не задан"
+    keep_icon = not (icon_id or icon_text)
+    try:
+        ok = await rename_catalog_country(country_id, new_name, icon_id, icon_text, keep_icon=keep_icon)
+    except Exception as exc:
+        await state.clear()
+        await message.answer(
+            f"Не удалось переименовать страну: {html.escape(str(exc))}",
+            reply_markup=await build_admin_catalog_keyboard(),
+        )
+        return
+    await state.clear()
+    if not ok:
+        await message.answer("Кнопка страны не найдена.", reply_markup=await build_admin_catalog_keyboard())
+        return
+    await log_purchase("admin_action", action=f"Переименована страна: {old_name} -> {new_name}", admin_id=message.from_user.id)
     await message.answer(
-        "<b>Флаг</b>\n\n"
-        f"Текущий обычный флаг: {html.escape(current_icon_text)}\n"
-        f"Текущий ID: <code>{html.escape(current_icon)}</code>\n\n"
-        "Отправьте новый обычный флаг, premium emoji, HTML с <code>emoji-id</code> или сам ID.\n"
-        "Чтобы оставить текущий флаг, отправьте <code>-</code>.",
-        reply_markup=cancel_flow_kb("admin_catalog"),
+        f"Страна переименована: <b>{html.escape(old_name)}</b> → <b>{html.escape(new_name)}</b>",
+        reply_markup=await build_admin_catalog_keyboard(),
     )
 
 
