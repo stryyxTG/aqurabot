@@ -269,6 +269,7 @@ bot = Bot(settings.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.
 dp = Dispatcher(storage=MemoryStorage())
 session_manager = ShopSessionManager(settings)
 country_search_cache: dict[int, str] = {}
+catalog_product_filters: dict[tuple[int, str], dict[str, object]] = {}
 
 
 def topup_methods_keyboard() -> InlineKeyboardMarkup:
@@ -1881,6 +1882,87 @@ async def build_batch_tdata_archive(products: list, output_dir: Path, batch_id: 
 
 def normalize_country_search(value: object) -> str:
     return " ".join(str(value or "").casefold().split())
+
+
+def catalog_filter_scope(country_id: int | None) -> str:
+    return "all" if country_id is None else f"c{country_id}"
+
+
+def parse_catalog_filter_callback(data: str | None) -> tuple[int | None, str]:
+    raw_scope = (data or "").split(":", 1)[1] if ":" in (data or "") else "all"
+    if raw_scope.startswith("c") and raw_scope[1:].isdigit():
+        return int(raw_scope[1:]), raw_scope
+    return None, "all"
+
+
+def parse_catalog_product_filter(text: str) -> dict[str, object]:
+    raw = (text or "").strip()
+    normalized = raw.replace(",", ".")
+    filters: dict[str, object] = {}
+    patterns = {
+        "min_price": r"(?:^|[\s;\n])(?:мин|от|min)\s*[:=]?\s*([0-9]+(?:\.[0-9]+)?)",
+        "max_price": r"(?:^|[\s;\n])(?:макс|до|max)\s*[:=]?\s*([0-9]+(?:\.[0-9]+)?)",
+        "min_qty": r"(?:^|[\s;\n])(?:кол|к-во|количество|шт|qty)\s*[:=]?\s*(\d+)",
+    }
+    cleaned = normalized
+    for key, pattern in patterns.items():
+        match = re.search(pattern, cleaned, flags=re.IGNORECASE)
+        if not match:
+            continue
+        value = parse_float(match.group(1)) if key != "min_qty" else int(match.group(1))
+        if value is not None:
+            filters[key] = value
+        cleaned = re.sub(pattern, " ", cleaned, count=1, flags=re.IGNORECASE)
+
+    name_match = re.search(r"(?:^|[\s;\n])(?:название|товар|поиск|name)\s*[:=]\s*([^\n;]+)", cleaned, flags=re.IGNORECASE)
+    if name_match:
+        filters["title"] = " ".join(name_match.group(1).strip().split())
+        cleaned = re.sub(r"(?:^|[\s;\n])(?:название|товар|поиск|name)\s*[:=]\s*[^\n;]+", " ", cleaned, count=1, flags=re.IGNORECASE)
+    else:
+        title = " ".join(cleaned.strip(" ;\n\t").split())
+        if title:
+            filters["title"] = title
+
+    return filters
+
+
+def apply_catalog_product_filters(items: list[dict], filters: dict[str, object] | None) -> list[dict]:
+    if not filters:
+        return items
+    title_filter = normalize_country_search(filters.get("title"))
+    min_price = filters.get("min_price")
+    max_price = filters.get("max_price")
+    min_qty = filters.get("min_qty")
+    result = []
+    for item in items:
+        title = normalize_country_search(item.get("title"))
+        price = float(item.get("price") or 0)
+        qty = int(item.get("stock_count") or 0)
+        if title_filter and title_filter not in title:
+            continue
+        if min_price is not None and price < float(min_price):
+            continue
+        if max_price is not None and price > float(max_price):
+            continue
+        if min_qty is not None and qty < int(min_qty):
+            continue
+        result.append(item)
+    return result
+
+
+def format_catalog_filter(filters: dict[str, object] | None) -> str:
+    if not filters:
+        return ""
+    parts = []
+    if filters.get("title"):
+        parts.append(f"название: <code>{html.escape(str(filters['title']))}</code>")
+    if filters.get("min_price") is not None:
+        parts.append(f"от {fmt_money(float(filters['min_price']))}")
+    if filters.get("max_price") is not None:
+        parts.append(f"до {fmt_money(float(filters['max_price']))}")
+    if filters.get("min_qty") is not None:
+        parts.append(f"кол-во от {int(filters['min_qty'])}")
+    return "\n<b>Фильтр:</b> " + ", ".join(parts) if parts else ""
 
 
 def clamp_page(page: int, total_items: int, page_size: int) -> tuple[int, int]:
@@ -4144,27 +4226,28 @@ async def my_purchase_detail(query: CallbackQuery):
     await safe_edit(query.message, text, purchase_history_detail_kb(page, int(purchase["product_id"]), batch_id or None))
 
 
-async def _render_product_list(query: CallbackQuery, *, country_id: int | None, page: int) -> None:
+async def build_product_list_content(user_id: int, *, country_id: int | None, page: int) -> tuple[str, InlineKeyboardMarkup]:
     country = None
     active_country_names: set[str] | None = None
+    scope = catalog_filter_scope(country_id)
+    filters = catalog_product_filters.get((user_id, scope))
     if country_id is not None:
         country_row = await get_catalog_country(country_id)
         if not country_row:
-            await query.answer("Кнопка страны не найдена.", show_alert=True)
-            return
+            raise ValueError("Кнопка страны не найдена.")
         country = country_row["name"]
     else:
         active_country_names = {row["name"] for row in await list_catalog_countries()}
-    offset = page * PAGE_SIZE
     if active_country_names is None:
-        items = await list_product_departments(country=country, offset=offset, limit=PAGE_SIZE)
-        total = await count_product_departments(country=country)
+        all_items = await list_product_departments(country=country, limit=100000, offset=0)
     else:
         all_items = [item for item in await list_product_departments(limit=1000) if item["country"] in active_country_names]
-        total = len(all_items)
-        items = all_items[offset:offset + PAGE_SIZE]
+    all_items = apply_catalog_product_filters(all_items, filters)
+    total = len(all_items)
+    page, total_pages = clamp_page(page, total, PAGE_SIZE)
+    offset = page * PAGE_SIZE
+    items = all_items[offset:offset + PAGE_SIZE]
     total_accounts = await count_products(country=country)
-    total_pages = -(-total // PAGE_SIZE) if total > 0 else 1
     rows = []
     for item in items:
         count = int(item["stock_count"] or 0)
@@ -4175,12 +4258,45 @@ async def _render_product_list(query: CallbackQuery, *, country_id: int | None, 
                 callback_data=f"product_group:{item['sample_product_id']}:{'all' if country_id is None else f'c{country_id}'}:{page}",
             )
         ])
+    filter_text = format_catalog_filter(filters)
     if country:
-        text = f"{ICON_COUNTRY} <b>Страна:</b> {html.escape(country)}\n\n{ICON_TAG} <b>Товаров:</b> {total_accounts}"
+        text = (
+            f"{ICON_COUNTRY} <b>Страна:</b> {html.escape(country)}\n\n"
+            f"{ICON_TAG} <b>Товаров:</b> {total_accounts}\n"
+            f"<b>Типов найдено:</b> {total}"
+            f"{filter_text}"
+        )
     else:
-        text = f"<b>Все товары</b>\n\n{ICON_TAG} <b>Товаров:</b> {total_accounts}"
+        text = (
+            f"<b>Все товары</b>\n\n"
+            f"{ICON_TAG} <b>Товаров:</b> {total_accounts}\n"
+            f"<b>Типов найдено:</b> {total}"
+            f"{filter_text}"
+        )
     prefix = "catalog_all" if country_id is None else f"catalog_country:{country_id}:"
-    await safe_edit(query.message, text, product_list_kb(prefix=prefix, product_rows=rows, page=page, total_pages=total_pages, back_callback="catalog_accounts"))
+    filter_callback = f"catalog_filter:{scope}"
+    clear_filter_callback = f"catalog_filter_clear:{scope}" if filters else None
+    return (
+        text,
+        product_list_kb(
+            prefix=prefix,
+            product_rows=rows,
+            page=page,
+            total_pages=total_pages,
+            back_callback="catalog_accounts",
+            filter_callback=filter_callback,
+            clear_filter_callback=clear_filter_callback,
+        ),
+    )
+
+
+async def _render_product_list(query: CallbackQuery, *, country_id: int | None, page: int) -> None:
+    try:
+        text, keyboard = await build_product_list_content(query.from_user.id, country_id=country_id, page=page)
+    except ValueError as exc:
+        await query.answer(str(exc), show_alert=True)
+        return
+    await safe_edit(query.message, text, keyboard)
 
 
 @dp.callback_query(F.data.startswith("catalog_country:"))
@@ -4196,6 +4312,66 @@ async def catalog_all(query: CallbackQuery):
     await ensure_known_user(query)
     await query.answer()
     await _render_product_list(query, country_id=None, page=int(query.data.rsplit("_", 1)[1]))
+
+
+@dp.callback_query(F.data.startswith("catalog_filter:"))
+async def catalog_filter_start(query: CallbackQuery, state: FSMContext):
+    await ensure_known_user(query)
+    await query.answer()
+    country_id, scope = parse_catalog_filter_callback(query.data)
+    await state.set_state(UserCatalogStates.waiting_product_filter)
+    await state.update_data(catalog_filter_country_id=country_id, catalog_filter_scope=scope)
+    current = catalog_product_filters.get((query.from_user.id, scope))
+    current_text = format_catalog_filter(current) or "\n<b>Фильтр:</b> не задан"
+    await safe_edit(
+        query.message,
+        "<b>Фильтр товаров</b>\n\n"
+        "Можно указать название, минимальную/максимальную цену и минимальное количество.\n\n"
+        "Пример:\n"
+        "<code>название: USA\nмин: 2\nмакс: 5\nкол: 10</code>\n\n"
+        "Можно короче: <code>USA мин 2 макс 5 кол 10</code>\n"
+        "Чтобы очистить фильтр, отправьте <code>-</code>."
+        f"{current_text}",
+        cancel_flow_kb("catalog_accounts"),
+    )
+
+
+@dp.message(UserCatalogStates.waiting_product_filter)
+async def catalog_filter_finish(message: Message, state: FSMContext):
+    await ensure_known_user(message)
+    data = await state.get_data()
+    country_id = data.get("catalog_filter_country_id")
+    country_id = int(country_id) if country_id is not None else None
+    scope = data.get("catalog_filter_scope") or catalog_filter_scope(country_id)
+    raw_text = (message.text or "").strip()
+    key = (message.from_user.id, str(scope))
+    if raw_text == "-":
+        catalog_product_filters.pop(key, None)
+    else:
+        filters = parse_catalog_product_filter(raw_text)
+        if not filters:
+            await message.answer(
+                "Не понял фильтр. Пример: <code>название: USA\nмин: 2\nмакс: 5\nкол: 10</code>",
+                reply_markup=cancel_flow_kb("catalog_accounts"),
+            )
+            return
+        catalog_product_filters[key] = filters
+    await state.clear()
+    try:
+        text, keyboard = await build_product_list_content(message.from_user.id, country_id=country_id, page=0)
+    except ValueError:
+        await message.answer("Кнопка страны не найдена.", reply_markup=await build_catalog_home_kb())
+        return
+    await message.answer(text, reply_markup=keyboard)
+
+
+@dp.callback_query(F.data.startswith("catalog_filter_clear:"))
+async def catalog_filter_clear(query: CallbackQuery):
+    await ensure_known_user(query)
+    country_id, scope = parse_catalog_filter_callback(query.data)
+    catalog_product_filters.pop((query.from_user.id, scope), None)
+    await query.answer("Фильтр сброшен.")
+    await _render_product_list(query, country_id=country_id, page=0)
 
 
 @dp.callback_query(F.data.startswith("product_group:"))

@@ -278,6 +278,7 @@ def catalog_home_kb(
     if nav:
         rows.append(nav)
     rows.append([InlineKeyboardButton(text="Поиск", callback_data="catalog_country_search")])
+    rows.append([InlineKeyboardButton(text="Фильтр товаров", callback_data="catalog_filter:all")])
     rows.append([InlineKeyboardButton(text="Назад", callback_data="menu_catalog", icon_custom_emoji_id=BTN_ICON_BACK)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -352,7 +353,16 @@ def service_order_confirm_kb(action: str, order_id: int, username: str | None = 
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def product_list_kb(*, prefix: str, product_rows: list[list[InlineKeyboardButton]], page: int, total_pages: int, back_callback: str) -> InlineKeyboardMarkup:
+def product_list_kb(
+    *,
+    prefix: str,
+    product_rows: list[list[InlineKeyboardButton]],
+    page: int,
+    total_pages: int,
+    back_callback: str,
+    filter_callback: str | None = None,
+    clear_filter_callback: str | None = None,
+) -> InlineKeyboardMarkup:
     rows = list(product_rows)
     nav = []
     def page_callback(next_page: int) -> str:
@@ -365,6 +375,10 @@ def product_list_kb(*, prefix: str, product_rows: list[list[InlineKeyboardButton
         if page + 1 < total_pages:
             nav.append(InlineKeyboardButton(text=">", callback_data=page_callback(page + 1)))
         rows.append(nav)
+    if filter_callback:
+        rows.append([InlineKeyboardButton(text="Фильтр", callback_data=filter_callback)])
+    if clear_filter_callback:
+        rows.append([InlineKeyboardButton(text="Сбросить фильтр", callback_data=clear_filter_callback)])
     rows.append([InlineKeyboardButton(text="Назад", callback_data=back_callback, icon_custom_emoji_id=BTN_ICON_BACK)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
