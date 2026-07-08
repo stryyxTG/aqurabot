@@ -11,6 +11,7 @@ import re
 import shutil
 import aiohttp
 import tempfile
+import time
 import uuid
 import zipfile
 from contextlib import closing
@@ -181,7 +182,8 @@ from .keyboards import (
 )
 from .proxy_store import load_global_proxy, save_global_proxy
 from .proxy_utils import check_proxy_connectivity, format_proxy_summary, parse_proxy_input
-from .paths import product_session_base_path, SESSIONS_DIR, ROOT_DIR
+from .paths import product_session_base_path, SESSIONS_DIR, ROOT_DIR, LOG_DIR
+from .logging_config import configure_logging
 from .session_flow import LoginExpiredError, ShopSessionManager
 from .session_metadata import (
     load_metadata_file,
@@ -196,11 +198,7 @@ from .session_metadata import (
 from .states import AdminAddProductStates, AdminBroadcastStates, AdminCardsStates, AdminCatalogStates, AdminCleanStates, AdminProxyStates, AdminTopUpStates, AdminEditProductStates, AdminEditProductGroupStates, AdminSearchUserStates, AdminSearchProductStates, AdminDropsStates, UserTopUpStates, UserCartStates, UserCatalogStates, ServiceOrderStates, AdminScanStates
 
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-    handlers=[logging.FileHandler("bot.log", encoding="utf-8"), logging.StreamHandler()],
-)
+configure_logging()
 logger = logging.getLogger("shopbot")
 
 settings: Settings = load_settings()
@@ -407,6 +405,64 @@ class AgreementMiddleware(BaseMiddleware):
         return
 
 
+class EventLoggingMiddleware(BaseMiddleware):
+    def _describe_event(self, event: TelegramObject) -> tuple[str, str]:
+        if isinstance(event, CallbackQuery):
+            return "callback", event.data or "-"
+        if isinstance(event, Message):
+            if event.text and event.text.startswith("/"):
+                return "command", event.text.split(maxsplit=1)[0]
+            if event.document:
+                return "message", f"document:{event.document.file_name or event.document.file_id}"
+            if event.photo:
+                return "message", "photo"
+            if event.text:
+                return "message", "text"
+            return "message", "other"
+        return type(event).__name__, "-"
+
+    async def __call__(self, handler, event: TelegramObject, data: dict):
+        started = time.perf_counter()
+        user = data.get("event_from_user")
+        state: FSMContext | None = data.get("state")
+        state_name = await state.get_state() if state else None
+        event_type, event_payload = self._describe_event(event)
+        user_id = getattr(user, "id", None)
+        username = getattr(user, "username", None) or "-"
+        admin = bool(user_id and is_admin(user_id))
+
+        try:
+            result = await handler(event, data)
+        except Exception:
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            logger.exception(
+                "Update failed | event=%s | payload=%s | user=%s | username=%s | admin=%s | state=%s | %.1f ms",
+                event_type,
+                event_payload,
+                user_id,
+                username,
+                admin,
+                state_name or "-",
+                elapsed_ms,
+            )
+            raise
+
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        level = logging.INFO if admin or event_type in {"command", "callback"} or elapsed_ms >= 1500 else logging.DEBUG
+        logger.log(
+            level,
+            "Update handled | event=%s | payload=%s | user=%s | username=%s | admin=%s | state=%s | %.1f ms",
+            event_type,
+            event_payload,
+            user_id,
+            username,
+            admin,
+            state_name or "-",
+            elapsed_ms,
+        )
+        return result
+
+
 FSM_CALLBACK_WHITELIST = {
     AdminAddProductStates.waiting_add_method.state: ("admin_add_by_phone", "admin_add_by_session"),
     AdminAddProductStates.waiting_bulk_sessions.state: ("bulk_sessions_done",),
@@ -543,6 +599,14 @@ async def require_admin(target: Message | CallbackQuery) -> bool:
 
 def fmt_money(value: float) -> str:
     return f"{value:.2f} {settings.currency}"
+
+
+def mask_phone(value: object) -> str:
+    text = str(value or "").strip()
+    digits = "".join(ch for ch in text if ch.isdigit())
+    if len(digits) <= 4:
+        return text or "-"
+    return f"+***{digits[-4:]}"
 
 
 def parse_iso_datetime(value: str | None) -> datetime | None:
@@ -924,8 +988,15 @@ async def log_purchase(event_type: str, **data) -> None:
                     inline_keyboard=[[InlineKeyboardButton(text="Открыть профиль", url=f"https://t.me/{buyer_username}")]]
                 )
             await bot.send_message(LOG_CHANNEL_ID, text, reply_markup=reply_markup)
-        except Exception as e:
-            logger.error(f"Не смог залогировать {event_type}: {e}")
+            logger.info(
+                "Log channel event sent | event=%s | user=%s | product=%s | phone=%s",
+                event_type,
+                data.get("user_id", "-"),
+                data.get("product_title", "-"),
+                mask_phone(data.get("phone")),
+            )
+        except Exception:
+            logger.exception("Could not send log channel event | event=%s", event_type)
 
 
 async def create_full_database_excel() -> str:
@@ -3301,7 +3372,7 @@ async def user_topup_amount(message: Message, state: FSMContext):
     })
 
     if not res.get("ok"):
-        logger.error(f"CryptoPay error: {res}")
+        logger.error("CryptoPay create invoice failed | user=%s | amount=%s | response=%s", message.from_user.id, credit_amount, res)
         await message.answer("Не удалось создать счет. Попробуйте позже.")
         return
 
@@ -4619,9 +4690,22 @@ async def request_code(query: CallbackQuery):
     
     await query.answer("Получаю к0D...")
     status_msg = await query.message.edit_text(f"{ICON_KEYBOARD} Получаю к0D...")
+    logger.info(
+        "User requested code | user=%s | product=%s | batch=%s | phone=%s",
+        user_id,
+        product_id,
+        batch_id or "-",
+        mask_phone(product["phone"]),
+    )
     
     try:
         code = await session_manager.fetch_code_from_telegram(product_id)
+        logger.info(
+            "User code delivered | user=%s | product=%s | batch=%s",
+            user_id,
+            product_id,
+            batch_id or "-",
+        )
         
         # Логируем отправку кода
         await log_purchase("code_sent",
@@ -4646,6 +4730,12 @@ async def request_code(query: CallbackQuery):
         )
         
     except Exception as e:
+        logger.exception(
+            "User code request failed | user=%s | product=%s | batch=%s",
+            user_id,
+            product_id,
+            batch_id or "-",
+        )
         # Логируем ошибку
         await log_purchase("purchase_error",
             product_title=product["title"],
@@ -5805,9 +5895,9 @@ async def admin_export_database(query: CallbackQuery):
             await query.message.edit_text("Excel файл отправлен.")
         else:
             await query.message.edit_text("Не удалось создать Excel файл.")
-    except Exception as e:
-        logger.error(f"Ошибка при создании Excel: {e}")
-        await query.message.edit_text(f"Ошибка: {html.escape(str(e))}")
+    except Exception as exc:
+        logger.exception("Could not create database Excel export | admin=%s", query.from_user.id)
+        await query.message.edit_text(f"Ошибка: {html.escape(str(exc))}")
 
 
 @dp.callback_query(F.data == "admin_reset_stats")
@@ -5886,11 +5976,11 @@ async def admin_reset_stats_confirm(query: CallbackQuery):
                 [InlineKeyboardButton(text="В админку", callback_data="admin_home", icon_custom_emoji_id=BTN_ICON_ADMIN)]
             ])
         )
-    except Exception as e:
-        logger.error(f"Ошибка при сбросе статистики: {e}")
+    except Exception as exc:
+        logger.exception("Could not reset statistics | admin=%s", query.from_user.id)
         await query.message.edit_text(
             f"<b>Ошибка при сбросе статистики</b>\n\n"
-            f"<code>{str(e)[:100]}</code>\n\n"
+            f"<code>{str(exc)[:100]}</code>\n\n"
             "Попробуйте позже.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="В админку", callback_data="admin_home", icon_custom_emoji_id=BTN_ICON_ADMIN)]
@@ -7548,7 +7638,11 @@ async def admin_add_bulk_sessions(message: Message, state: FSMContext):
     except zipfile.BadZipFile:
         await message.answer("ZIP не читается. Проверьте архив и отправьте ещё раз.")
     except Exception as exc:
-        logger.error(f"Ошибка при загрузке bulk сессии: {exc}")
+        logger.exception(
+            "Could not upload bulk sessions | admin=%s | file=%s",
+            message.from_user.id,
+            file_name,
+        )
         await message.answer(f"Ошибка: {html.escape(str(exc))}")
 
 
@@ -7680,7 +7774,11 @@ async def admin_add_session_file(message: Message, state: FSMContext):
             reply_markup=cancel_flow_kb("admin_home")
         )
     except Exception as exc:
-        logger.error(f"Ошибка при загрузке .session файла: {exc}")
+        logger.exception(
+            "Could not upload single session file | admin=%s | file=%s",
+            message.from_user.id,
+            file_name,
+        )
         await message.answer(f"Ошибка при загрузке: {html.escape(str(exc))}")
 
 
@@ -8060,6 +8158,14 @@ async def finish_admin_add_products(message: Message, state: FSMContext, admin_i
 
     bulk_sessions = data.get("bulk_sessions", [])
     if bulk_sessions:
+        logger.info(
+            "Bulk product creation started | admin=%s | count=%s | country=%s | title=%s | price=%s",
+            admin_id,
+            len(bulk_sessions),
+            data.get("country", "-"),
+            plain_button_text(str(data.get("title", "-"))),
+            data.get("price", "-"),
+        )
         await message.answer(f"Создаю товаров: {len(bulk_sessions)}...")
 
         created_products = []
@@ -8079,7 +8185,14 @@ async def finish_admin_add_products(message: Message, state: FSMContext, admin_i
                     error = alive_check.get("error", "Неизвестная ошибка")
                     discard_session_files(session_path)
                     errors.append(f"Сессия #{idx}: {error}")
-                    logger.warning(f"Сессия {idx}/{len(bulk_sessions)} не принята: {error}")
+                    logger.warning(
+                        "Bulk session rejected | admin=%s | item=%s/%s | session=%s | error=%s",
+                        admin_id,
+                        idx,
+                        len(bulk_sessions),
+                        Path(str(session_path)).name,
+                        error,
+                    )
                     continue
 
                 phone = (alive_check.get("phone") or "").strip()
@@ -8102,11 +8215,26 @@ async def finish_admin_add_products(message: Message, state: FSMContext, admin_i
                     created_by=admin_id,
                 )
                 created_products.append(product_id)
-                logger.info(f"Товар #{product_id} (сессия {idx}/{len(bulk_sessions)}) создан успешно")
+                logger.info(
+                    "Product created from bulk session | product=%s | admin=%s | item=%s/%s | phone=%s | country=%s | title=%s",
+                    product_id,
+                    admin_id,
+                    idx,
+                    len(bulk_sessions),
+                    mask_phone(phone),
+                    data.get("country", "-"),
+                    plain_button_text(str(data.get("title", "-"))),
+                )
 
             except Exception as exc:
                 errors.append(f"Товар #{idx}: {html.escape(str(exc))}")
-                logger.error(f"Ошибка при создании товара {idx}: {exc}")
+                logger.exception(
+                    "Could not create product from bulk session | admin=%s | item=%s/%s | session=%s",
+                    admin_id,
+                    idx,
+                    len(bulk_sessions),
+                    Path(str(session_path)).name,
+                )
 
         await state.clear()
         await session_manager.cleanup(admin_id)
@@ -8121,6 +8249,12 @@ async def finish_admin_add_products(message: Message, state: FSMContext, admin_i
                 result_text += f"  ... и ещё {len(errors) - 5} ошибок"
 
         await message.answer(result_text, reply_markup=admin_home_kb())
+        logger.info(
+            "Bulk product creation finished | admin=%s | created=%s | errors=%s",
+            admin_id,
+            len(created_products),
+            len(errors),
+        )
         return
 
     try:
@@ -8217,6 +8351,7 @@ async def cancel_flow(query: CallbackQuery, state: FSMContext):
         AdminAddProductStates.waiting_code.state,
         AdminAddProductStates.waiting_password.state,
         AdminAddProductStates.waiting_country.state,
+        AdminAddProductStates.waiting_country_search.state,
         AdminAddProductStates.waiting_department.state,
         AdminAddProductStates.waiting_title.state,
         AdminAddProductStates.waiting_price.state,
@@ -8224,6 +8359,13 @@ async def cancel_flow(query: CallbackQuery, state: FSMContext):
         AdminAddProductStates.waiting_extra_code.state,
     }
     if is_admin_add_flow:
+        logger.info(
+            "Admin add flow cancelled | admin=%s | state=%s | session_path=%s | bulk_count=%s",
+            query.from_user.id,
+            current_state or "-",
+            data.get("session_path") or "-",
+            len(data.get("bulk_sessions", []) or []),
+        )
         session_path = data.get("session_path")
         if session_path and session_path != "pending":
             discard_session_files(session_path)
@@ -8284,14 +8426,22 @@ async def noop_callback(query: CallbackQuery):
 
 async def on_startup() -> None:
     await init_db()
-    logger.info("Shop bot initialized")
+    logger.info(
+        "Shop bot initialized | admins=%s | currency=%s | logs=%s | sessions=%s",
+        len(settings.admin_ids),
+        settings.currency,
+        LOG_DIR,
+        SESSIONS_DIR,
+    )
 
 
 async def main_async() -> None:
     await on_startup()
-    # Регистрация middleware
+    logger.info("Starting polling")
+    dp.message.outer_middleware(EventLoggingMiddleware())
     dp.message.outer_middleware(SubscriptionMiddleware())
     dp.message.outer_middleware(AgreementMiddleware())
+    dp.callback_query.outer_middleware(EventLoggingMiddleware())
     dp.callback_query.outer_middleware(CallbackFSMGuardMiddleware())
     dp.callback_query.outer_middleware(SubscriptionMiddleware())
     dp.callback_query.outer_middleware(AgreementMiddleware())

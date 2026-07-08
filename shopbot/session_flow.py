@@ -33,6 +33,18 @@ logger = logging.getLogger(__name__)
 LOGIN_STEP_TIMEOUT = 25
 
 
+def _mask_code(code: str) -> str:
+    text = str(code or "")
+    if len(text) <= 2:
+        return "***"
+    return f"{text[0]}***{text[-1]}"
+
+
+def _mask_digits_in_text(text: str, *, limit: int = 120) -> str:
+    preview = (text or "").replace("\n", " ").strip()[:limit]
+    return re.sub(r"\b\d{4,8}\b", "***", preview)
+
+
 @dataclass(slots=True)
 class ActiveLogin:
     login_id: str
@@ -161,14 +173,14 @@ class ShopSessionManager:
     def _looks_like_new_login_notice(self, text: str) -> bool:
         normalized = (text or "").casefold()
         if not normalized:
-            logger.debug(f"[_looks_like_new_login_notice] Пустой текст")
+            logger.debug("Login notice check skipped: empty text")
             return False
         
         # Отфильтровываем ТОЛЬКО явные сообщения о коде подтверждения
         code_only_markers = ("login code is:", "к0d для входа:", "к0d входа:", "your login code")
         for marker in code_only_markers:
             if marker in normalized:
-                logger.debug(f"[_looks_like_new_login_notice] ❌ Это сообщение о К0D (найден маркер '{marker}')")
+                logger.debug("Login notice check skipped: login-code marker matched | marker=%s", marker)
                 return False
         
         login_markers = (
@@ -203,10 +215,10 @@ class ShopSessionManager:
         
         for marker in login_markers:
             if marker in normalized:
-                logger.info(f"[_looks_like_new_login_notice] ✅ СОВПАДЕНИЕ! Найден маркер '{marker}'")
+                logger.info("Login notice marker matched | marker=%s", marker)
                 return True
         
-        logger.debug(f"[_looks_like_new_login_notice] ❌ Не подходит ни под один маркер входа. Текст: {text[:80]}")
+        logger.debug("Login notice check missed | text=%s", _mask_digits_in_text(text, limit=80))
         return False
 
     async def _connect_with_backoff(self, client, max_retries: int = 2, base_delay: float = 1.0) -> None:
@@ -373,108 +385,118 @@ class ShopSessionManager:
         return final_session
 
     async def fetch_code_from_telegram(self, product_id: int) -> str:
-        """
-        Получает ПЕРВЫЙ полученный код из чата Telegram (за последние 5 минут).
-        Если несколько кодов - вернет самый первый (самый старый).
-        Возвращает код.
-        """
+        """Fetch the newest 5-6 digit login code from Telegram service messages."""
         session_path = await self._get_product_session_path(product_id)
         if not session_path or not Path(session_path).exists():
             raise RuntimeError("Сессия товара не найдена. Обратитесь к администратору.")
-        
+
         proxy_settings = load_global_proxy()
         client = self._build_client(Path(session_path), proxy_settings)
-        
+        since_dt = datetime.now(timezone.utc) - timedelta(minutes=5)
+        messages_checked = 0
+        fresh_messages = 0
+
+        logger.info(
+            "Code fetch started | product=%s | since=%s | proxy=%s",
+            product_id,
+            since_dt.isoformat(timespec="seconds"),
+            format_proxy_summary(proxy_settings) if proxy_settings else "none",
+        )
+
         try:
             await self._connect_with_backoff(client, max_retries=2)
-            
+
             if not await client.is_user_authorized():
                 raise RuntimeError("Сессия товара недействительна. Обратитесь к администратору.")
-            
-            # Получаем текущее время в UTC
-            now = datetime.now(timezone.utc)
-            five_minutes_ago = now - timedelta(minutes=5)
-            
-            logger.info(f"[product={product_id}] Ищу k0dы с {five_minutes_ago.isoformat()}")
-            
-            # Ищем служебный диалог с Telegram.
-            target_dialog = None
-            async for dialog in client.iter_dialogs():
-                entity = dialog.entity
-                entity_id = getattr(entity, 'id', None)
-                entity_username = getattr(entity, 'username', None)
-                
-                if entity_id == 777000 or (entity_username and entity_username.lower() == "telegram"):
-                    target_dialog = dialog
-                    logger.info(f"[product={product_id}] Найден диалог с Telegram")
-                    break
-            
-            if not target_dialog:
-                # Пробуем найти через get_entity по ID
-                try:
-                    target_dialog = await client.get_entity(777000)
-                    logger.info(f"[product={product_id}] Диалог с Telegram получен через get_entity")
-                except Exception:
-                    raise RuntimeError("Не удалось найти чат с @Telegram.")
-            
-            # Ищем ПОСЛЕДНИЙ (самый новый) полученный код за последние 5 минут
-            found_codes = []
-            messages_checked = 0
-            
-            logger.info(f"[product={product_id}] === НАЧИНАЮ ПОИСК КОДОВ ===")
-            logger.info(f"[product={product_id}] Ищу коды с {five_minutes_ago.isoformat()}")
-            
+
+            try:
+                target_dialog = await self._get_telegram_dialog(client)
+            except Exception as exc:
+                logger.warning("Code fetch failed: Telegram service dialog not found | product=%s", product_id)
+                raise RuntimeError("Не удалось найти чат с @Telegram.") from exc
+
+            logger.info("Code fetch dialog ready | product=%s", product_id)
+
+            found_codes: list[tuple[datetime, str]] = []
             async for msg in client.iter_messages(target_dialog, limit=20):
                 messages_checked += 1
-                msg_date = msg.date.astimezone(timezone.utc) if hasattr(msg.date, 'astimezone') else msg.date
+                msg_date = msg.date.astimezone(timezone.utc) if hasattr(msg.date, "astimezone") else msg.date
                 if msg_date.tzinfo is None:
                     msg_date = msg_date.replace(tzinfo=timezone.utc)
-                    
+
+                if msg_date < since_dt:
+                    logger.debug(
+                        "Code fetch message skipped: old | product=%s | msg=%s | date=%s",
+                        product_id,
+                        messages_checked,
+                        msg_date.isoformat(timespec="seconds"),
+                    )
+                    continue
+
+                fresh_messages += 1
                 text = msg.text or ""
-                logger.info(f"[product={product_id}] msg#{messages_checked}: {msg_date.isoformat()} | ТЕКСТ: {text[:150]}")
-                
-                if msg_date < five_minutes_ago:
-                    logger.info(f"[product={product_id}] msg#{messages_checked}: ⏱️ ПРОПУСКАЮ - старше 5 минут")
-                    continue  # Сообщение старше 5 минут, пропускаем
-                
-                logger.info(f"[product={product_id}] msg#{messages_checked}: ⏳ ПРОВЕРЯЮ - ищу k0d (5-6 цифр)...")
-                
-                # Ищем код в сообщении (5-6 цифр)
-                match = re.search(r'\b(\d{5,6})\b', text)
+                match = re.search(r"\b(\d{5,6})\b", text)
                 if match:
                     code = match.group(1)
                     found_codes.append((msg_date, code))
-                    logger.info(f"[product={product_id}] ✅ НАЙДЕН КОД: {code} в сообщении от {msg_date.isoformat()}")
+                    logger.info(
+                        "Code candidate found | product=%s | msg=%s | date=%s | code=%s",
+                        product_id,
+                        messages_checked,
+                        msg_date.isoformat(timespec="seconds"),
+                        _mask_code(code),
+                    )
                 else:
-                    logger.debug(f"[product={product_id}] msg#{messages_checked}: ❌ Кода нет в этом сообщении")
-            
+                    logger.debug(
+                        "Code fetch message checked: no code | product=%s | msg=%s | date=%s | text=%s",
+                        product_id,
+                        messages_checked,
+                        msg_date.isoformat(timespec="seconds"),
+                        _mask_digits_in_text(text),
+                    )
+
             if not found_codes:
-                logger.warning(f"[product={product_id}] Кодов не найдено. Проверено {messages_checked} сообщений")
+                logger.warning(
+                    "Code fetch finished without result | product=%s | checked=%s | fresh=%s | since=%s",
+                    product_id,
+                    messages_checked,
+                    fresh_messages,
+                    since_dt.isoformat(timespec="seconds"),
+                )
                 raise RuntimeError("Пока новых к0dов нет.")
-            
-            # Сортируем по дате, берём ПОСЛЕДНИЙ (самый новый) полученный код
-            found_codes.sort(key=lambda x: x[0])
-            last_code = found_codes[-1][1]  # Последний элемент - самый новый код
-            
-            logger.info(f"[product={product_id}] Найдено {len(found_codes)} к0dов, отправляю последний (самый новый): {last_code}")
-            
-            # Сохраняем время получения кода в БД
+
+            found_codes.sort(key=lambda item: item[0])
+            last_date, last_code = found_codes[-1]
+            logger.info(
+                "Code fetch succeeded | product=%s | candidates=%s | checked=%s | selected_date=%s | code=%s",
+                product_id,
+                len(found_codes),
+                messages_checked,
+                last_date.isoformat(timespec="seconds"),
+                _mask_code(last_code),
+            )
+
             try:
                 await update_code_fetched_at(product_id)
-                logger.info(f"[product={product_id}] Время получения к0dа сохранено в БД")
-            except Exception as db_error:
-                logger.warning(f"[product={product_id}] Не удалось сохранить время получения к0dа: {db_error}")
-            
-            await client.disconnect()
+                logger.info("Code fetch timestamp saved | product=%s", product_id)
+            except Exception:
+                logger.exception("Could not save code fetch timestamp | product=%s", product_id)
+
             return last_code
-            
-        except Exception as e:
-            logger.exception(f"[product={product_id}] Ошибка при получении к0dа: {e}")
+
+        except Exception as exc:
+            logger.exception(
+                "Code fetch failed | product=%s | checked=%s | fresh=%s",
+                product_id,
+                messages_checked,
+                fresh_messages,
+            )
+            raise RuntimeError(f"Ошибка при получении к0dа: {str(exc)}") from exc
+        finally:
             try:
                 await client.disconnect()
-            except:
-                pass
-            raise RuntimeError(f"Ошибка при получении к0dа: {str(e)}")
+            except Exception:
+                logger.debug("Could not disconnect code fetch client | product=%s", product_id, exc_info=True)
 
     async def detect_buyer_login(self, product_id: int, since: str | None) -> dict:
         return {"confirmed": False, "error": "Auto login verification removed"}
@@ -494,8 +516,12 @@ class ShopSessionManager:
         # Ищем входы ПОСЛЕ момента начала сделки (sold_at)
         # Используем sold_at как границу поиска - сессия должна быть создана ПОСЛЕ этого времени
         search_since_dt = self._parse_dt(since)
-        logger.info(f"[product={product_id}] === ПРОВЕРКА СЕССИЙ ТОВАРА ===")
-        logger.info(f"[product={product_id}] Ищу НОВЫЕ сессии, созданные ПОСЛЕ: {search_since_dt.isoformat()} (sold_at={since})")
+        logger.info(
+            "Buyer login check started | product=%s | since=%s | sold_at=%s",
+            product_id,
+            search_since_dt.isoformat(),
+            since,
+        )
 
         try:
             await self._connect_with_backoff(client, max_retries=1)
@@ -507,7 +533,7 @@ class ShopSessionManager:
             result = await client(auth_request)
             
             sessions_total = len(result.authorizations) if hasattr(result, 'authorizations') else 0
-            logger.info(f"[product={product_id}] Всего активных сессий: {sessions_total}")
+            logger.info("Buyer login check authorizations loaded | product=%s | total=%s", product_id, sessions_total)
             
             for idx, session in enumerate(result.authorizations, 1):
                 session_date = session.date_created
@@ -521,26 +547,47 @@ class ShopSessionManager:
                 device_info = getattr(session, 'device_model', 'unknown')
                 app_name = getattr(session, 'app_name', 'unknown')
                 
-                logger.info(f"[product={product_id}] Сессия #{idx}: created={session_date.isoformat()} | device={device_info} | app={app_name}")
+                logger.info(
+                    "Buyer login check session | product=%s | index=%s | created=%s | device=%s | app=%s",
+                    product_id,
+                    idx,
+                    session_date.isoformat(),
+                    device_info,
+                    app_name,
+                )
                 
                 # Check if session was created STRICTLY AFTER deal start
                 if session_date > search_since_dt:
-                    logger.info(f"[product={product_id}] ✅✅✅ НАЙДЕНА НОВАЯ СЕССИЯ!")
-                    logger.info(f"[product={product_id}] Время создания: {session_date.isoformat()} > {search_since_dt.isoformat()}")
+                    logger.info(
+                        "Buyer login confirmed | product=%s | index=%s | created=%s | since=%s",
+                        product_id,
+                        idx,
+                        session_date.isoformat(),
+                        search_since_dt.isoformat(),
+                    )
                     return {
                         "confirmed": True,
                         "session_date": session_date.isoformat(timespec="seconds"),
                         "device": f"{device_info}",
                     }
                 else:
-                    logger.info(f"[product={product_id}] Сессия #{idx}: ❌ СТАРАЯ - {session_date.isoformat()} <= {search_since_dt.isoformat()}")
+                    logger.debug(
+                        "Buyer login session skipped: old | product=%s | index=%s | created=%s | since=%s",
+                        product_id,
+                        idx,
+                        session_date.isoformat(),
+                        search_since_dt.isoformat(),
+                    )
             
-            logger.warning(f"[product={product_id}] === НОВАЯ СЕССИЯ НЕ НАЙДЕНА ===")
-            logger.warning(f"[product={product_id}] Проверено {sessions_total} сессий, ни одна не соответствует критериям")
-            logger.warning(f"[product={product_id}] Нужно найти сессию, созданную ПОСЛЕ: {search_since_dt.isoformat()}")
+            logger.warning(
+                "Buyer login not confirmed | product=%s | checked=%s | since=%s",
+                product_id,
+                sessions_total,
+                search_since_dt.isoformat(),
+            )
             return {"confirmed": False, "error": "Новая сессия не обнаружена"}
         except Exception as e:
-            logger.exception(f"[product={product_id}] Ошибка при проверке сессий: {e}")
+            logger.exception("Buyer login check failed | product=%s", product_id)
             return {"confirmed": False, "error": str(e) or type(e).__name__}
         finally:
             try:
