@@ -5208,6 +5208,16 @@ def admin_product_detail_callback_from_token(product_id: int, token: str) -> str
     return f"admin_stock_product:{product_id}"
 
 
+def admin_post_remove_kb(back_callback: str) -> InlineKeyboardMarkup:
+    rows = []
+    if back_callback == "admin_product_search":
+        rows.append([InlineKeyboardButton(text="Новый поиск", callback_data="admin_product_search")])
+    elif back_callback and back_callback != "admin_home":
+        rows.append([InlineKeyboardButton(text="Назад", callback_data=back_callback, icon_custom_emoji_id=BTN_ICON_BACK)])
+    rows.append([InlineKeyboardButton(text="В админку", callback_data="admin_home", icon_custom_emoji_id=BTN_ICON_ADMIN)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 @dp.callback_query(F.data.startswith("admin_verify_account:"))
 async def admin_verify_account(query: CallbackQuery):
     await ensure_known_user(query)
@@ -5581,7 +5591,8 @@ async def admin_product_search_start(query: CallbackQuery, state: FSMContext):
     await safe_edit(
         query.message,
         "<b>Поиск товара</b>\n\n"
-        "Отправьте номер телефона товара или ID товара.",
+        "Отправьте ID товара, например <code>150</code> или <code>#150</code>, "
+        "либо номер телефона в любом формате.",
         cancel_flow_kb("admin_home"),
     )
 
@@ -5592,7 +5603,7 @@ async def admin_product_search_process(message: Message, state: FSMContext):
         return
     query_text = (message.text or "").strip()
     if len(query_text) < 2:
-        await message.answer("Отправьте номер телефона или ID товара.")
+        await message.answer("Отправьте ID товара или номер телефона.")
         return
     products = await search_products(query_text, limit=20)
     if not products:
@@ -5619,14 +5630,19 @@ async def admin_product_search_process(message: Message, state: FSMContext):
 
     rows = []
     for product in products:
+        status = str(product["status"] or "—")
+        phone = product["phone"] or "—"
+        title = plain_button_text(product["title"])
         rows.append([
             InlineKeyboardButton(
-                text=f"#{product['product_id']} {product['phone'] or '—'} • {product['title']}",
+                text=f"#{product['product_id']} {phone} • {title} • {status}",
                 callback_data=f"admin_stock_product:{product['product_id']}:search",
             )
         ])
     await message.answer(
-        f"<b>Найдено товаров:</b> {len(products)}\n\nВыберите нужный:",
+        f"<b>Найдено товаров:</b> {len(products)}\n\n"
+        f"Запрос: <code>{html.escape(query_text)}</code>\n\n"
+        "Выберите нужный:",
         reply_markup=admin_product_search_results_kb(rows),
     )
 
@@ -7460,13 +7476,27 @@ async def admin_stuck_remove(query: CallbackQuery):
     await admin_stuck_products(query)
 
 
+@dp.callback_query(F.data.startswith("admin_remove:"))
 @dp.callback_query(F.data.startswith("admin_remove_"))
 async def admin_remove(query: CallbackQuery):
     await ensure_known_user(query)
     await query.answer()
     if not is_admin(query.from_user.id):
         return
-    product_id = int(query.data.split("_")[-1])
+    callback_data = query.data or ""
+    back_callback = "admin_home"
+    try:
+        if callback_data.startswith("admin_remove:"):
+            parts = callback_data.split(":")
+            product_id = int(parts[1])
+            token = ":".join(parts[2:]) if len(parts) > 2 else ""
+            if token:
+                back_callback = admin_product_back_callback_from_token(token)
+        else:
+            product_id = int(callback_data.split("_")[-1])
+    except (IndexError, ValueError):
+        await query.answer("Некорректный товар.", show_alert=True)
+        return
     product = await get_product(product_id)
     if not product:
         await query.answer("Товар не найден.", show_alert=True)
@@ -7491,20 +7521,23 @@ async def admin_remove(query: CallbackQuery):
             )
         else:
             await query.answer(f"Не удалось удалить: {delete_result}", show_alert=True)
-        await safe_edit(query.message, "<b>Админка</b>", admin_home_kb())
+        await safe_edit(query.message, f"<b>Товар #{product_id} удален.</b>", admin_post_remove_kb(back_callback))
         return
     
+    removed = False
     # Пытаемся обычное удаление, если не сработает - принудительное
     if await remove_product(product_id):
         await query.answer("Товар снят с продажи.")
         await log_purchase("admin_action", action=f"Товар #{product_id} снят с продажи", admin_id=query.from_user.id)
+        removed = True
     elif await force_remove_product(product_id):
         await query.answer("Товар удален.")
         await log_purchase("admin_action", action=f"Товар #{product_id} принудительно удален", admin_id=query.from_user.id)
+        removed = True
     else:
         await query.answer("Товар не найден.", show_alert=True)
-    
-    await safe_edit(query.message, "<b>Админка</b>", admin_home_kb())
+    if removed:
+        await safe_edit(query.message, f"<b>Товар #{product_id} удален.</b>", admin_post_remove_kb(back_callback))
 
 
 @dp.callback_query(F.data == "admin_topup")

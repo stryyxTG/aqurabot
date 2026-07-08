@@ -659,6 +659,8 @@ async def search_products(query: str, limit: int = 20):
     value = (query or "").strip()
     if not value:
         return []
+    clean_id = value[1:].strip() if value.startswith("#") else value
+    product_id = int(clean_id) if clean_id.isdigit() else None
     phone_digits = "".join(ch for ch in value if ch.isdigit())
     normalized_phone_sql = (
         "replace(replace(replace(replace(replace(replace(replace(replace("
@@ -666,29 +668,59 @@ async def search_products(query: str, limit: int = 20):
         "'(', ''), ')', ''), '.', ''), CHAR(9), ''), CHAR(10), ''), CHAR(13), ''), "
         "'\u00a0', '')"
     )
-    phone_like = f"%{value}%"
-    args: list[object] = []
-    conditions = ["phone LIKE ?"]
-    args.append(phone_like)
-    if phone_digits:
-        conditions.append(f"{normalized_phone_sql} LIKE ?")
-        args.append(f"%{phone_digits}%")
-    if value.isdigit():
-        conditions.insert(0, "product_id = ?")
-        args.insert(0, int(value))
-    exact_product_id = int(value) if value.isdigit() else -1
+    limit = max(1, int(limit or 20))
     async with get_db_conn() as db:
+        if product_id is not None:
+            async with db.execute(
+                "SELECT * FROM products WHERE product_id = ? AND status != 'removed'",
+                (product_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row:
+                return [row]
+
+        args: list[object] = []
+        conditions: list[str] = []
+        rank_cases: list[str] = []
+
+        raw_like = f"%{value}%"
+        if len(value) >= 5 and not value.isdigit():
+            conditions.append("phone LIKE ?")
+            args.append(raw_like)
+            rank_cases.append("WHEN phone = ? THEN 10")
+            rank_cases.append("WHEN phone LIKE ? THEN 40")
+
+        rank_args: list[object] = []
+        if len(value) >= 5 and not value.isdigit():
+            rank_args.extend([value, raw_like])
+
+        if phone_digits:
+            conditions.append(f"{normalized_phone_sql} = ?")
+            args.append(phone_digits)
+            rank_cases.append(f"WHEN {normalized_phone_sql} = ? THEN 0")
+            rank_args.append(phone_digits)
+
+        if len(phone_digits) >= 7:
+            digit_like = f"%{phone_digits}%"
+            conditions.append(f"{normalized_phone_sql} LIKE ?")
+            args.append(digit_like)
+            rank_cases.append(f"WHEN {normalized_phone_sql} LIKE ? THEN 30")
+            rank_args.append(digit_like)
+
+        if not conditions:
+            return []
+
+        rank_sql = "CASE " + " ".join(rank_cases) + " ELSE 99 END"
         async with db.execute(
             f"""
             SELECT *
             FROM products
-            WHERE {" OR ".join(conditions)}
-            ORDER BY
-                CASE WHEN product_id = ? THEN 0 ELSE 1 END,
-                product_id DESC
+            WHERE status != 'removed'
+              AND ({" OR ".join(conditions)})
+            ORDER BY {rank_sql}, product_id DESC
             LIMIT ?
             """,
-            tuple(args + [exact_product_id, limit]),
+            tuple(args + rank_args + [limit]),
         ) as cursor:
             return await cursor.fetchall()
 
