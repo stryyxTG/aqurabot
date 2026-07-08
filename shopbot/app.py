@@ -50,7 +50,6 @@ from .db import (
     delete_sold_product_with_history,
     force_remove_product,
     get_all_users_with_purchases,
-    get_available_countries,
     get_catalog_country,
     get_balance,
     get_crypto_invoice,
@@ -2086,6 +2085,31 @@ async def build_catalog_home_kb(*, page: int = 0, search_query: str | None = Non
 async def build_admin_catalog_keyboard(*, page: int = 0) -> InlineKeyboardMarkup:
     rows, page, total_pages, _total = await build_admin_country_rows(page=page)
     return admin_catalog_kb(rows, page=page, total_pages=total_pages)
+
+
+async def build_admin_stock_country_rows(*, page: int = 0) -> tuple[list[list[InlineKeyboardButton]], int, int, int]:
+    counts = [row for row in await list_country_counts() if int(row["total"] or 0) > 0]
+    total = len(counts)
+    page, total_pages = clamp_page(page, total, COUNTRY_PAGE_SIZE)
+    start = page * COUNTRY_PAGE_SIZE
+    rows: list[list[InlineKeyboardButton]] = []
+    for row in counts[start:start + COUNTRY_PAGE_SIZE]:
+        stock_count = int(row["total"] or 0)
+        rows.append([
+            InlineKeyboardButton(
+                text=country_button_label(row["country"], stock_count, row["icon_text"]),
+                callback_data=f"admin_stock_country:{row['country_id']}:0:{page}",
+                icon_custom_emoji_id=row["icon_custom_emoji_id"],
+            )
+        ])
+    return rows, page, total_pages, total
+
+
+async def build_admin_stock_catalog_keyboard(*, page: int = 0) -> tuple[InlineKeyboardMarkup, int, int]:
+    rows, page, total_pages, total = await build_admin_stock_country_rows(page=page)
+    if not rows:
+        rows = [[InlineKeyboardButton(text="Нет товаров в наличии", callback_data="noop")]]
+    return admin_countries_available_kb(rows, page=page, total_pages=total_pages), page, total
 
 
 async def catalog_country_name_exists(name: str, *, except_country_id: int | None = None) -> bool:
@@ -5130,7 +5154,25 @@ def admin_product_back_callback_from_token(token: str) -> str:
             except ValueError:
                 return "admin_stock_catalog"
             return f"admin_product_group:{sample_product_id}:{country_id}:{page}"
+    if token.startswith("country:"):
+        parts = token.split(":")
+        if len(parts) == 4:
+            try:
+                country_id = int(parts[1])
+                page = max(0, int(parts[2]))
+                catalog_page = max(0, int(parts[3]))
+            except ValueError:
+                return "admin_stock_catalog"
+            return f"admin_stock_country:{country_id}:{page}:{catalog_page}"
     return "admin_stock_catalog"
+
+
+def admin_product_detail_callback_from_token(product_id: int, token: str) -> str:
+    if token == "search":
+        return f"admin_stock_product:{product_id}:search"
+    if token.startswith(("sold:", "group:", "country:")):
+        return f"admin_stock_product:{product_id}:{token}"
+    return f"admin_stock_product:{product_id}"
 
 
 @dp.callback_query(F.data.startswith("admin_verify_account:"))
@@ -6710,26 +6752,24 @@ async def admin_proxy_input(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data == "admin_stock")
 @dp.callback_query(F.data == "admin_stock_catalog")
+@dp.callback_query(F.data.startswith("admin_stock_catalog:"))
 async def admin_stock_catalog(query: CallbackQuery):
     await ensure_known_user(query)
     await query.answer()
     if not is_admin(query.from_user.id):
         return
-    
-    # Показываем только доступные страны (с available товарами)
-    countries = await get_available_countries()
-    
-    rows = []
-    for country_row in countries:
-        country = country_row["country"]
-        count = country_row["count"]
-        rows.append([InlineKeyboardButton(text=f"{country} ({count})", callback_data=f"admin_stock_country:{country}")])
-    
-    if not rows:
-        rows = [[InlineKeyboardButton(text="Нет товаров в наличии", callback_data="noop")]]
-    
+
+    page = 0
+    if ":" in (query.data or ""):
+        try:
+            page = max(0, int((query.data or "").rsplit(":", 1)[1]))
+        except ValueError:
+            page = 0
+    markup, page, total = await build_admin_stock_catalog_keyboard(page=page)
     text = "<b>Товары по странам</b>\n\nВыберите страну:"
-    await safe_edit(query.message, text, admin_countries_available_kb(rows))
+    if total:
+        text += f"\nВсего регионов с товаром: <b>{total}</b>"
+    await safe_edit(query.message, text, markup)
 
 
 @dp.callback_query(F.data.startswith("admin_stock_country:"))
@@ -6738,28 +6778,61 @@ async def admin_stock_country(query: CallbackQuery):
     await query.answer()
     if not is_admin(query.from_user.id):
         return
-    
     parts = query.data.split(":")
-    country = parts[1]
-    page = int(parts[2]) if len(parts) > 2 else 0
+    country_id: int | None = None
+    country = ""
+    page = 0
+    catalog_page = 0
+    try:
+        if len(parts) >= 2 and parts[1].isdigit():
+            country_id = int(parts[1])
+            page = max(0, int(parts[2])) if len(parts) > 2 else 0
+            catalog_page = max(0, int(parts[3])) if len(parts) > 3 else 0
+            country_row = await get_catalog_country(country_id)
+            if not country_row:
+                await query.answer("Страна не найдена.", show_alert=True)
+                return
+            country = country_row["name"]
+        else:
+            country = parts[1]
+            page = max(0, int(parts[2])) if len(parts) > 2 else 0
+            country_id = 0
+            for row in await list_catalog_countries():
+                if str(row["name"]) == country:
+                    country_id = int(row["country_id"])
+                    break
+    except (IndexError, ValueError):
+        await query.answer("Страна не найдена.", show_alert=True)
+        return
     
-    offset = page * PAGE_SIZE
-    products = await list_products(country=country, offset=offset, limit=PAGE_SIZE, status="available")
     total = await count_products(country=country, status="available")
     total_pages = -(-total // PAGE_SIZE) if total > 0 else 1
+    page = min(page, total_pages - 1)
+    offset = page * PAGE_SIZE
+    products = await list_products(country=country, offset=offset, limit=PAGE_SIZE, status="available")
     
     rows = []
     for product in products:
         rows.append([InlineKeyboardButton(
             text=f"{product['title']} • {fmt_money(float(product['price']))}",
-            callback_data=f"admin_stock_product:{product['product_id']}"
+            callback_data=f"admin_stock_product:{product['product_id']}:country:{country_id}:{page}:{catalog_page}"
         )])
     
     if not rows:
         rows = [[InlineKeyboardButton(text="Нет товаров", callback_data="noop")]]
     
     text = f"<b>{country}</b>\n\nТовары в наличии: <b>{total}</b>"
-    await safe_edit(query.message, text, admin_products_by_country_kb(rows, country=country, page=page, total_pages=total_pages))
+    await safe_edit(
+        query.message,
+        text,
+        admin_products_by_country_kb(
+            rows,
+            country_id=int(country_id or 0),
+            page=page,
+            total_pages=total_pages,
+            catalog_page=catalog_page,
+        ),
+    )
 
 
 @dp.callback_query(F.data == "admin_stock_sold_list")
@@ -6978,6 +7051,14 @@ async def admin_stock_product_detail(query: CallbackQuery):
         back_callback = f"admin_stock_sold_list:{sold_page}"
     elif len(parts) >= 3 and parts[2] == "search":
         back_callback = "admin_product_search"
+    elif len(parts) >= 6 and parts[2] == "country":
+        try:
+            country_id = int(parts[3])
+            country_page = max(0, int(parts[4]))
+            catalog_page = max(0, int(parts[5]))
+            back_callback = f"admin_stock_country:{country_id}:{country_page}:{catalog_page}"
+        except ValueError:
+            back_callback = "admin_stock_catalog"
     elif len(parts) >= 6 and parts[2] == "group":
         try:
             sample_product_id = int(parts[3])
@@ -7015,7 +7096,14 @@ async def admin_get_code(query: CallbackQuery):
     await query.answer("Получаю к0d...")
     if not is_admin(query.from_user.id):
         return
-    product_id = int(query.data.split(":", 1)[1])
+    parts = (query.data or "").split(":")
+    try:
+        product_id = int(parts[1])
+    except (IndexError, ValueError):
+        await query.answer("Товар не найден.", show_alert=True)
+        return
+    back_token = ":".join(parts[2:]) if len(parts) > 2 else "catalog"
+    detail_callback = admin_product_detail_callback_from_token(product_id, back_token)
     product = await get_product(product_id)
     if not product:
         await query.answer("Товар не найден.", show_alert=True)
@@ -7043,7 +7131,7 @@ async def admin_get_code(query: CallbackQuery):
             f"<b>Ошибка:</b> {html.escape(str(exc))}",
             admin_product_detail_kb(
                 product_id,
-                back_callback=f"admin_stock_product:{product_id}",
+                back_callback=detail_callback,
                 can_terminate_sessions=has_server_session(product),
                 can_fetch_code=has_server_session(product),
                 can_claim=product["status"] in {"available", "waiting_code"},
@@ -7065,7 +7153,7 @@ async def admin_get_code(query: CallbackQuery):
         f"<b>К0D:</b> <code>{html.escape(str(code))}</code>{twofa_text}",
         admin_product_detail_kb(
             product_id,
-            back_callback=f"admin_stock_product:{product_id}",
+            back_callback=detail_callback,
             can_terminate_sessions=has_server_session(product),
             can_fetch_code=has_server_session(product),
             can_claim=product["status"] in {"available", "waiting_code"},

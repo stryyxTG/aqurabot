@@ -749,22 +749,44 @@ def subscription_kb(channel_url: str) -> InlineKeyboardMarkup:
     )
 
 
-def admin_countries_available_kb(country_rows: list[list[InlineKeyboardButton]]) -> InlineKeyboardMarkup:
+def admin_countries_available_kb(
+    country_rows: list[list[InlineKeyboardButton]],
+    *,
+    page: int = 0,
+    total_pages: int = 1,
+) -> InlineKeyboardMarkup:
     rows = list(country_rows)
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="<", callback_data=f"admin_stock_catalog:{page - 1}"))
+    if total_pages > 1:
+        nav.append(InlineKeyboardButton(text=f"{page + 1}/{max(total_pages, 1)}", callback_data="noop"))
+    if page + 1 < total_pages:
+        nav.append(InlineKeyboardButton(text=">", callback_data=f"admin_stock_catalog:{page + 1}"))
+    if nav:
+        rows.append(nav)
     rows.append([InlineKeyboardButton(text="Назад", callback_data="admin_home", icon_custom_emoji_id=BTN_ICON_BACK)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def admin_products_by_country_kb(product_rows: list[list[InlineKeyboardButton]], country: str, page: int, total_pages: int) -> InlineKeyboardMarkup:
+def admin_products_by_country_kb(
+    product_rows: list[list[InlineKeyboardButton]],
+    *,
+    country_id: int,
+    page: int,
+    total_pages: int,
+    catalog_page: int = 0,
+) -> InlineKeyboardMarkup:
     rows = list(product_rows)
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton(text="<", callback_data=f"admin_stock_country:{country}:{page-1}"))
-    nav.append(InlineKeyboardButton(text=f"{page+1}/{max(total_pages, 1)}", callback_data="noop"))
+        nav.append(InlineKeyboardButton(text="<", callback_data=f"admin_stock_country:{country_id}:{page - 1}:{catalog_page}"))
+    nav.append(InlineKeyboardButton(text=f"{page + 1}/{max(total_pages, 1)}", callback_data="noop"))
     if page + 1 < total_pages:
-        nav.append(InlineKeyboardButton(text=">", callback_data=f"admin_stock_country:{country}:{page+1}"))
-    rows.append(nav)
-    rows.append([InlineKeyboardButton(text="Назад", callback_data="admin_stock_catalog", icon_custom_emoji_id=BTN_ICON_BACK)])
+        nav.append(InlineKeyboardButton(text=">", callback_data=f"admin_stock_country:{country_id}:{page + 1}:{catalog_page}"))
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton(text="Назад", callback_data=f"admin_stock_catalog:{catalog_page}", icon_custom_emoji_id=BTN_ICON_BACK)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -788,7 +810,7 @@ def admin_product_detail_kb(
     if can_claim:
         rows.append([InlineKeyboardButton(text="Забрать со склада", callback_data=f"admin_claim_ask:{product_id}")])
     if can_fetch_code:
-        rows.append([InlineKeyboardButton(text="Получить к0d", callback_data=f"admin_get_code:{product_id}", icon_custom_emoji_id=BTN_ICON_CHECK)])
+        rows.append([InlineKeyboardButton(text="Получить к0d", callback_data=f"admin_get_code:{product_id}:{verify_back_token}", icon_custom_emoji_id=BTN_ICON_CHECK)])
     if can_terminate_sessions:
         rows.append([InlineKeyboardButton(text="Завершить с3ccuu", callback_data=f"admin_terminate_sessions_ask:{product_id}", icon_custom_emoji_id=BTN_ICON_CANCEL)])
     rows.append([InlineKeyboardButton(text="Удалить товар", callback_data=f"admin_remove_{product_id}", icon_custom_emoji_id=BTN_ICON_CANCEL)])
@@ -803,6 +825,8 @@ def admin_product_back_token(back_callback: str) -> str:
         return "sold:" + back_callback.split(":", 1)[1]
     if back_callback.startswith("admin_product_group:"):
         return "group:" + back_callback.split(":", 1)[1]
+    if back_callback.startswith("admin_stock_country:"):
+        return "country:" + back_callback.split(":", 1)[1]
     return "catalog"
 
 
