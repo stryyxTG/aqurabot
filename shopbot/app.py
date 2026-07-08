@@ -130,6 +130,7 @@ from .keyboards import (
     admin_terminate_sessions_step1_kb,
     admin_terminate_sessions_step2_kb,
     admin_scan_confirm_kb,
+    admin_scan_limit_label,
     admin_scan_settings_kb,
     admin_stats_kb,
     admin_sold_history_kb,
@@ -204,8 +205,13 @@ settings: Settings = load_settings()
 PAGE_SIZE = 7
 PURCHASE_PAGE_SIZE = 7
 ADMIN_SOLD_PAGE_SIZE = 21
+ADMIN_SCAN_ERROR_PAGE_SIZE = 20
 JOIN_REQUEST_PENDING_TTL = timedelta(hours=24)
 DISPLAY_TZ = timezone(timedelta(hours=3), "GMT+3")
+SCAN_MIN_INTERVAL = 5
+SCAN_MAX_INTERVAL = 600
+SCAN_DEFAULT_INTERVAL = 5
+SCAN_DEFAULT_LIMIT = 0
 LOG_CHANNEL_ID = settings.log_channel_id
 RU_TOPUP_CHAT_ID = settings.ru_topup_chat_id
 UA_TOPUP_CHAT_ID = settings.ua_topup_chat_id
@@ -606,6 +612,33 @@ def mask_phone(value: object) -> str:
     if len(digits) <= 4:
         return text or "-"
     return f"+***{digits[-4:]}"
+
+
+def normalize_scan_interval(value: object) -> int:
+    try:
+        interval = int(value)
+    except (TypeError, ValueError):
+        interval = SCAN_DEFAULT_INTERVAL
+    return max(SCAN_MIN_INTERVAL, min(SCAN_MAX_INTERVAL, interval))
+
+
+def normalize_scan_limit(value: object) -> int:
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        limit = SCAN_DEFAULT_LIMIT
+    return max(0, limit)
+
+
+def parse_scan_limit_input(value: str) -> int | None:
+    text = (value or "").strip().casefold()
+    if text in {"0", "-", "all", "все", "всё", "без лимита", "безлимит"}:
+        return 0
+    try:
+        limit = int(text)
+    except ValueError:
+        return None
+    return limit if limit >= 1 else None
 
 
 def parse_iso_datetime(value: str | None) -> datetime | None:
@@ -5236,16 +5269,16 @@ async def admin_scan_accounts(query: CallbackQuery, state: FSMContext):
     if not is_admin(query.from_user.id): return
     await query.answer()
     data = await state.get_data()
-    interval = int(data.get("scan_interval") or 60)
-    limit = int(data.get("scan_limit") or 5)
+    interval = normalize_scan_interval(data.get("scan_interval"))
+    limit = normalize_scan_limit(data.get("scan_limit"))
     await state.update_data(scan_interval=interval, scan_limit=limit)
     text = (
         "<b>Глубокая проверка товаров</b>\n\n"
         "Эта проверка подключается к сессuu каждого товара и осторожно проверяет, валидна ли она. "
         "Используйте только когда это действительно нужно.\n\n"
         f"<b>Интервал:</b> {interval} сек\n"
-        f"<b>Лимит:</b> {limit} товаров за запуск\n\n"
-        "Рекомендуемо: 60-120 секунд и небольшой лимит."
+        f"<b>Лимит:</b> {admin_scan_limit_label(limit)}\n\n"
+        "Если выбран лимит <b>Все</b>, бот возьмет все доступные товары на момент запуска."
     )
     await safe_edit(query.message, text, admin_scan_settings_kb(interval, limit))
 
@@ -5263,7 +5296,7 @@ async def admin_scan_interval(query: CallbackQuery, state: FSMContext):
 async def admin_scan_limit(query: CallbackQuery, state: FSMContext):
     await ensure_known_user(query)
     if not is_admin(query.from_user.id): return
-    limit = int(query.data.split(":", 1)[1])
+    limit = normalize_scan_limit(query.data.split(":", 1)[1])
     await state.update_data(scan_limit=limit)
     await admin_scan_accounts(query, state)
 
@@ -5276,7 +5309,9 @@ async def admin_scan_interval_custom(query: CallbackQuery, state: FSMContext):
     await state.set_state(AdminScanStates.waiting_interval)
     await safe_edit(
         query.message,
-        "<b>Интервал проверки</b>\n\nВведите задержку между товарами в секундах.\nМинимум: <b>20</b>, максимум: <b>600</b>.",
+        f"<b>Интервал проверки</b>\n\n"
+        f"Введите задержку между товарами в секундах.\n"
+        f"Минимум: <b>{SCAN_MIN_INTERVAL}</b>, максимум: <b>{SCAN_MAX_INTERVAL}</b>.",
         cancel_flow_kb("admin_scan_accounts"),
     )
 
@@ -5290,17 +5325,18 @@ async def admin_scan_interval_message(message: Message, state: FSMContext):
     except ValueError:
         await message.answer("Введите число секунд.")
         return
-    if interval < 20 or interval > 600:
-        await message.answer("Интервал должен быть от 20 до 600 секунд.")
+    if interval < SCAN_MIN_INTERVAL or interval > SCAN_MAX_INTERVAL:
+        await message.answer(f"Интервал должен быть от {SCAN_MIN_INTERVAL} до {SCAN_MAX_INTERVAL} секунд.")
         return
+    interval = normalize_scan_interval(interval)
     await state.update_data(scan_interval=interval)
     await state.set_state(None)
     data = await state.get_data()
-    limit = int(data.get("scan_limit") or 5)
+    limit = normalize_scan_limit(data.get("scan_limit"))
     await message.answer(
         "<b>Глубокая проверка товаров</b>\n\n"
         f"<b>Интервал:</b> {interval} сек\n"
-        f"<b>Лимит:</b> {limit} товаров за запуск",
+        f"<b>Лимит:</b> {admin_scan_limit_label(limit)}",
         reply_markup=admin_scan_settings_kb(interval, limit),
     )
 
@@ -5313,7 +5349,10 @@ async def admin_scan_limit_custom(query: CallbackQuery, state: FSMContext):
     await state.set_state(AdminScanStates.waiting_limit)
     await safe_edit(
         query.message,
-        "<b>Лимит проверки</b>\n\nВведите сколько товаров проверить за один запуск.\nМинимум: <b>1</b>, максимум: <b>20</b>.",
+        "<b>Лимит проверки</b>\n\n"
+        "Введите сколько товаров проверить за один запуск.\n"
+        "Минимум: <b>1</b>, верхнего лимита нет.\n\n"
+        "Чтобы проверить все доступные товары, отправьте <code>0</code>, <code>-</code> или <code>все</code>.",
         cancel_flow_kb("admin_scan_accounts"),
     )
 
@@ -5322,22 +5361,18 @@ async def admin_scan_limit_custom(query: CallbackQuery, state: FSMContext):
 async def admin_scan_limit_message(message: Message, state: FSMContext):
     await ensure_known_user(message)
     if not is_admin(message.from_user.id): return
-    try:
-        limit = int((message.text or "").strip())
-    except ValueError:
-        await message.answer("Введите число товаров.")
-        return
-    if limit < 1 or limit > 20:
-        await message.answer("Лимит должен быть от 1 до 20 товаров.")
+    limit = parse_scan_limit_input(message.text or "")
+    if limit is None:
+        await message.answer("Введите число товаров от 1 или <code>0</code>/<code>все</code>, чтобы проверить всё.")
         return
     await state.update_data(scan_limit=limit)
     await state.set_state(None)
     data = await state.get_data()
-    interval = int(data.get("scan_interval") or 60)
+    interval = normalize_scan_interval(data.get("scan_interval"))
     await message.answer(
         "<b>Глубокая проверка товаров</b>\n\n"
         f"<b>Интервал:</b> {interval} сек\n"
-        f"<b>Лимит:</b> {limit} товаров за запуск",
+        f"<b>Лимит:</b> {admin_scan_limit_label(limit)}",
         reply_markup=admin_scan_settings_kb(interval, limit),
     )
 
@@ -5347,8 +5382,10 @@ async def admin_scan_confirm(query: CallbackQuery, state: FSMContext):
     await ensure_known_user(query)
     if not is_admin(query.from_user.id): return
     data = await state.get_data()
-    interval = int(data.get("scan_interval") or 60)
-    limit = int(data.get("scan_limit") or 5)
+    interval = normalize_scan_interval(data.get("scan_interval"))
+    limit = normalize_scan_limit(data.get("scan_limit"))
+    available_total = await count_products(status="available")
+    planned_total = available_total if limit <= 0 else min(limit, available_total)
     await query.answer()
     await safe_edit(
         query.message,
@@ -5356,7 +5393,8 @@ async def admin_scan_confirm(query: CallbackQuery, state: FSMContext):
         "Бот будет по очереди подключаться к сеccuям товаров. "
         "Это не локальный скан файлов, поэтому запускать нужно осторожно.\n\n"
         f"<b>Интервал:</b> {interval} сек\n"
-        f"<b>Лимит:</b> {limit} товаров",
+        f"<b>Лимит:</b> {admin_scan_limit_label(limit)}\n"
+        f"<b>Будет проверено:</b> {planned_total} из {available_total}",
         admin_scan_confirm_kb(),
     )
 
@@ -5366,8 +5404,8 @@ async def admin_scan_start(query: CallbackQuery, state: FSMContext):
     await ensure_known_user(query)
     if not is_admin(query.from_user.id): return
     data = await state.get_data()
-    interval = max(20, min(600, int(data.get("scan_interval") or 60)))
-    limit = max(1, min(20, int(data.get("scan_limit") or 5)))
+    interval = normalize_scan_interval(data.get("scan_interval"))
+    limit = normalize_scan_limit(data.get("scan_limit"))
     await query.answer("Запускаю осторожную проверку.")
     status_msg = query.message
     await safe_edit(
@@ -5376,10 +5414,22 @@ async def admin_scan_start(query: CallbackQuery, state: FSMContext):
         "Запускаю осторожную проверку. Не закрывайте бот до завершения.",
     )
 
-    products = await list_products(status="available", limit=limit)
+    available_total = await count_products(status="available")
+    effective_limit = available_total if limit <= 0 else min(limit, available_total)
+    if effective_limit <= 0:
+        await safe_edit(
+            status_msg,
+            "<b>Глубокая проверка товаров</b>\n\n"
+            "Нет доступных товаров для проверки.",
+            admin_scan_settings_kb(interval, limit),
+        )
+        return
+
+    products = await list_products(status="available", limit=effective_limit)
     total = len(products)
     success = 0
     failed_data = {}
+    skipped_data = {}
     
     for idx, p in enumerate(products, 1):
         await safe_edit(
@@ -5391,23 +5441,28 @@ async def admin_scan_start(query: CallbackQuery, state: FSMContext):
             f"Ошибок: <b>{len(failed_data)}</b>\n\n"
             f"Интервал между товарами: <b>{interval} сек</b>",
         )
-        res = await session_manager.verify_account_alive(p["product_id"])
-        if res.get("alive"):
-            await update_product_info(p["product_id"], 
-                phone=res["phone"],
-                telegram_id=res["user_id"],
-                username=res["username"],
-                first_name=res["first_name"]
-            )
-            success += 1
-        else:
-            failed_data[p["product_id"]] = res.get("error", "Unknown error")
+        try:
+            res = await session_manager.verify_account_alive(p["product_id"])
+            if res.get("alive"):
+                await update_product_info(p["product_id"],
+                    phone=res["phone"],
+                    telegram_id=res["user_id"],
+                    username=res["username"],
+                    first_name=res["first_name"]
+                )
+                success += 1
+            else:
+                failed_data[p["product_id"]] = res.get("error", "Unknown error")
+        except Exception as exc:
+            skipped_data[p["product_id"]] = str(exc) or type(exc).__name__
+            logger.exception("Deep product scan failed unexpectedly | product=%s", p["product_id"])
         if idx < total:
             await asyncio.sleep(interval)
-    await state.update_data(last_scan_errors=failed_data)
+    all_errors = {**failed_data, **skipped_data}
+    await state.update_data(last_scan_errors=all_errors, scan_interval=interval, scan_limit=limit)
     
     kb = []
-    if failed_data:
+    if all_errors:
         kb.append([InlineKeyboardButton(text="Посмотреть ошибки", callback_data="admin_scan_failed_list")])
     kb.append([InlineKeyboardButton(text="В админку", callback_data="admin_home", icon_custom_emoji_id=BTN_ICON_ADMIN)])
     
@@ -5415,29 +5470,57 @@ async def admin_scan_start(query: CallbackQuery, state: FSMContext):
         f"<b>Сканирование завершено</b>\n\n"
         f"Проверено: <b>{total}</b>\n"
         f"Успешно: <b>{success}</b>\n"
-        f"Ошибок: <b>{len(failed_data)}</b>\n\n"
+        f"Ошибок: <b>{len(all_errors)}</b>\n\n"
         f"Интервал: <b>{interval} сек</b>\n"
-        f"Лимит: <b>{limit}</b>",
+        f"Лимит: <b>{admin_scan_limit_label(limit)}</b>",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=kb)
     )
 
 @dp.callback_query(F.data == "admin_scan_failed_list")
+@dp.callback_query(F.data.startswith("admin_scan_failed_list:"))
 async def admin_scan_failed_list(query: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     errors = data.get("last_scan_errors", {})
     if not errors:
         await query.answer("Ошибок не найдено.", show_alert=True)
         return
-    
+    await query.answer()
+
+    page = 0
+    if ":" in (query.data or ""):
+        try:
+            page = max(0, int((query.data or "").rsplit(":", 1)[1]))
+        except ValueError:
+            page = 0
+    product_ids = sorted((int(pid) for pid in errors.keys()), reverse=True)
+    page, total_pages = clamp_page(page, len(product_ids), ADMIN_SCAN_ERROR_PAGE_SIZE)
+    page_ids = product_ids[page * ADMIN_SCAN_ERROR_PAGE_SIZE:(page + 1) * ADMIN_SCAN_ERROR_PAGE_SIZE]
+
     rows = []
-    for pid in errors.keys():
+    for pid in page_ids:
         rows.append([InlineKeyboardButton(text=f"Товар #{pid}", callback_data=f"scan_err_det:{pid}")])
-    
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="<", callback_data=f"admin_scan_failed_list:{page - 1}"))
+    if total_pages > 1:
+        nav.append(InlineKeyboardButton(text=f"{page + 1}/{total_pages}", callback_data="noop"))
+    if page + 1 < total_pages:
+        nav.append(InlineKeyboardButton(text=">", callback_data=f"admin_scan_failed_list:{page + 1}"))
+    if nav:
+        rows.append(nav)
     rows.append([InlineKeyboardButton(text="Назад", callback_data="admin_home", icon_custom_emoji_id=BTN_ICON_BACK)])
-    await safe_edit(query.message, "<b>Ошибки сканирования</b>\n\nВыберите товар:", InlineKeyboardMarkup(inline_keyboard=rows))
+    await safe_edit(
+        query.message,
+        f"<b>Ошибки сканирования</b>\n\n"
+        f"Всего ошибок: <b>{len(product_ids)}</b>\n"
+        f"Страница: <b>{page + 1}/{total_pages}</b>\n\n"
+        "Выберите товар:",
+        InlineKeyboardMarkup(inline_keyboard=rows),
+    )
 
 @dp.callback_query(F.data.startswith("scan_err_det:"))
 async def admin_scan_failed_detail(query: CallbackQuery, state: FSMContext):
+    await query.answer()
     pid = int(query.data.split(":")[1])
     data = await state.get_data()
     errors = data.get("last_scan_errors", {})
@@ -8477,14 +8560,14 @@ async def cancel_flow(query: CallbackQuery, state: FSMContext):
     elif back_callback == "admin_proxy":
         await safe_edit(query.message, build_proxy_text(), proxy_menu_kb(bool(load_global_proxy())))
     elif back_callback == "admin_scan_accounts":
-        await state.update_data(scan_interval=60, scan_limit=5)
+        await state.update_data(scan_interval=SCAN_DEFAULT_INTERVAL, scan_limit=SCAN_DEFAULT_LIMIT)
         await safe_edit(
             query.message,
             "<b>Глубокая проверка товаров</b>\n\n"
             "Эта проверка подключается к с3cсuи каждого товара и осторожно проверяет, валидна ли она.\n\n"
-            "<b>Интервал:</b> 60 сек\n"
-            "<b>Лимит:</b> 5 товаров за запуск",
-            admin_scan_settings_kb(60, 5),
+            f"<b>Интервал:</b> {SCAN_DEFAULT_INTERVAL} сек\n"
+            f"<b>Лимит:</b> {admin_scan_limit_label(SCAN_DEFAULT_LIMIT)}",
+            admin_scan_settings_kb(SCAN_DEFAULT_INTERVAL, SCAN_DEFAULT_LIMIT),
         )
     elif back_callback == "menu_balance":
         text = (

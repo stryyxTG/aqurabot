@@ -495,21 +495,26 @@ def admin_stats_kb() -> InlineKeyboardMarkup:
     )
 
 
-def admin_scan_settings_kb(interval: int, limit: int) -> InlineKeyboardMarkup:
+def admin_scan_limit_label(limit: int | None) -> str:
+    return "Все" if not limit or int(limit) <= 0 else str(int(limit))
+
+
+def admin_scan_settings_kb(interval: int, limit: int | None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
+                InlineKeyboardButton(text="5 сек", callback_data="admin_scan_interval:5"),
                 InlineKeyboardButton(text="30 сек", callback_data="admin_scan_interval:30"),
                 InlineKeyboardButton(text="60 сек", callback_data="admin_scan_interval:60"),
-                InlineKeyboardButton(text="120 сек", callback_data="admin_scan_interval:120"),
             ],
             [InlineKeyboardButton(text=f"Свой интервал: {interval} сек", callback_data="admin_scan_interval_custom")],
             [
-                InlineKeyboardButton(text="3 товара", callback_data="admin_scan_limit:3"),
-                InlineKeyboardButton(text="5 товаров", callback_data="admin_scan_limit:5"),
                 InlineKeyboardButton(text="10 товаров", callback_data="admin_scan_limit:10"),
+                InlineKeyboardButton(text="50 товаров", callback_data="admin_scan_limit:50"),
+                InlineKeyboardButton(text="100 товаров", callback_data="admin_scan_limit:100"),
             ],
-            [InlineKeyboardButton(text=f"Свой лимит: {limit}", callback_data="admin_scan_limit_custom")],
+            [InlineKeyboardButton(text="Все товары", callback_data="admin_scan_limit:0")],
+            [InlineKeyboardButton(text=f"Свой лимит: {admin_scan_limit_label(limit)}", callback_data="admin_scan_limit_custom")],
             [InlineKeyboardButton(text="Начать глубокую проверку", callback_data="admin_scan_confirm")],
             [InlineKeyboardButton(text="Назад", callback_data="admin_home", icon_custom_emoji_id=BTN_ICON_BACK)],
         ]
