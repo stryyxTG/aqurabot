@@ -703,7 +703,13 @@ async def list_country_counts():
     async with get_db_conn() as db:
         async with db.execute(
             """
-            SELECT c.country_id, c.name AS country, c.icon_custom_emoji_id, c.icon_text, COUNT(p.product_id) AS total
+            SELECT
+                c.country_id,
+                c.name AS country,
+                c.icon_custom_emoji_id,
+                c.icon_text,
+                COUNT(p.product_id) AS total,
+                MIN(p.price) AS min_price
             FROM catalog_countries c
             LEFT JOIN products p ON p.country = c.name AND p.status = 'available'
             WHERE c.is_active = 1

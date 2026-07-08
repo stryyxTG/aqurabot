@@ -1432,9 +1432,20 @@ def extract_country_icon(message: Message) -> tuple[str | None, str | None]:
     return None, icon_text
 
 
-def country_button_label(name: object, count: object | None = None, icon_text: object | None = None) -> str:
+def country_button_label(
+    name: object,
+    count: object | None = None,
+    icon_text: object | None = None,
+    min_price: object | None = None,
+) -> str:
     prefix = f"{str(icon_text).strip()} " if str(icon_text or "").strip() else ""
-    suffix = f" ({count})" if count is not None else ""
+    price = parse_float(str(min_price)) if min_price is not None else None
+    if price is not None:
+        suffix = f" от {fmt_money(price)}"
+        if count is not None:
+            suffix += f" ({count})"
+    else:
+        suffix = f" ({count})" if count is not None else ""
     return f"{prefix}{name}{suffix}"
 
 
@@ -1886,7 +1897,7 @@ async def build_country_rows(search_query: str | None = None, *, page: int = 0) 
             continue
         rows.append([
             InlineKeyboardButton(
-                text=country_button_label(row["country"], row["total"], row["icon_text"]),
+                text=country_button_label(row["country"], row["total"], row["icon_text"], row["min_price"]),
                 callback_data=f"catalog_country:{row['country_id']}:0",
                 icon_custom_emoji_id=row["icon_custom_emoji_id"],
             )
