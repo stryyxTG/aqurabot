@@ -411,7 +411,7 @@ FSM_CALLBACK_WHITELIST = {
     AdminAddProductStates.waiting_add_method.state: ("admin_add_by_phone", "admin_add_by_session"),
     AdminAddProductStates.waiting_bulk_sessions.state: ("bulk_sessions_done",),
     AdminAddProductStates.waiting_code.state: ("code_digit:", "code_backspace", "code_clear", "code_submit"),
-    AdminAddProductStates.waiting_country.state: ("add_country:",),
+    AdminAddProductStates.waiting_country.state: ("add_country:", "add_country_page", "add_country_search", "add_country_search_clear"),
     AdminAddProductStates.waiting_department.state: ("add_department:", "add_department_new", "add_department_back"),
     ServiceOrderStates.waiting_recipient.state: ("service_order_cancel",),
     UserTopUpStates.waiting_receipt.state: ("cancel_topup_receipt",),
@@ -2051,6 +2051,21 @@ def parse_add_country_callback(callback_data: str) -> tuple[str | None, int | No
     return None, None
 
 
+def parse_add_country_page_callback(callback_data: str) -> tuple[str | None, int]:
+    parts = callback_data.split(":")
+    if len(parts) == 2:
+        try:
+            return None, max(0, int(parts[1]))
+        except ValueError:
+            return None, 0
+    if len(parts) == 3:
+        try:
+            return parts[1], max(0, int(parts[2]))
+        except ValueError:
+            return parts[1], 0
+    return None, 0
+
+
 def parse_add_department_callback(callback_data: str) -> tuple[str | None, int | None]:
     parts = callback_data.split(":")
     if len(parts) == 2:
@@ -2079,10 +2094,20 @@ async def check_add_flow_id(query: CallbackQuery, state: FSMContext, flow_id: st
     return True
 
 
-async def build_country_select_rows(flow_id: str | None = None) -> list[list[InlineKeyboardButton]]:
+async def build_country_select_rows(
+    flow_id: str | None = None,
+    *,
+    page: int = 0,
+    search_query: str | None = None,
+) -> tuple[list[list[InlineKeyboardButton]], int, int, int]:
     rows = []
+    query = normalize_country_search(search_query)
     countries = await list_catalog_countries()
     for row in countries:
+        if query:
+            haystack = normalize_country_search(f"{row['name']} {row['icon_text'] or ''}")
+            if query not in haystack:
+                continue
         callback_data = f"add_country:{flow_id}:{row['country_id']}" if flow_id else f"add_country:{row['country_id']}"
         rows.append([
             InlineKeyboardButton(
@@ -2091,7 +2116,29 @@ async def build_country_select_rows(flow_id: str | None = None) -> list[list[Inl
                 icon_custom_emoji_id=row["icon_custom_emoji_id"],
             )
         ])
-    return rows
+    total = len(rows)
+    page, total_pages = clamp_page(page, total, COUNTRY_PAGE_SIZE)
+    start = page * COUNTRY_PAGE_SIZE
+    return rows[start:start + COUNTRY_PAGE_SIZE], page, total_pages, total
+
+
+async def build_country_select_markup(
+    flow_id: str | None = None,
+    *,
+    page: int = 0,
+    search_query: str | None = None,
+) -> tuple[InlineKeyboardMarkup, int]:
+    rows, page, total_pages, total = await build_country_select_rows(flow_id, page=page, search_query=search_query)
+    return (
+        country_select_kb(
+            rows,
+            page=page,
+            total_pages=total_pages,
+            flow_id=flow_id,
+            search_active=bool(search_query),
+        ),
+        total,
+    )
 
 
 async def build_department_select_rows(country_id: int, country: str, flow_id: str | None = None) -> list[list[InlineKeyboardButton]]:
@@ -2118,13 +2165,13 @@ async def build_department_select_rows(country_id: int, country: str, flow_id: s
 
 async def prompt_admin_add_country(message: Message, state: FSMContext, text: str = "Выберите страну каталога для товара.") -> None:
     flow_id = make_add_flow_id()
-    country_rows = await build_country_select_rows(flow_id)
-    if not country_rows:
+    markup, total = await build_country_select_markup(flow_id)
+    if not total:
         await message.answer("Сначала добавьте хотя бы одну страну: Админка → Страны каталога.", reply_markup=admin_home_kb())
         return
     await state.set_state(AdminAddProductStates.waiting_country)
-    await state.update_data(add_flow_id=flow_id)
-    await message.answer(text, reply_markup=country_select_kb(country_rows))
+    await state.update_data(add_flow_id=flow_id, add_country_search_query="")
+    await message.answer(text, reply_markup=markup)
 
 
 def build_code_prompt_text(code_input: str) -> str:
@@ -7807,15 +7854,15 @@ async def admin_add_password(message: Message, state: FSMContext):
             return
         await state.update_data(telegram_id=int(me.id), username=me.username or "", first_name=me.first_name or "User", phone=getattr(me, "phone", "") or "", twofa_password=password)
         flow_id = make_add_flow_id()
-        country_rows = await build_country_select_rows(flow_id)
-        if not country_rows:
+        markup, total = await build_country_select_markup(flow_id)
+        if not total:
             await state.clear()
             await session_manager.cleanup(message.from_user.id)
             await progress.edit_text("2FA принята, но стран в каталоге нет. Сначала добавьте страну: Админка → Страны каталога.", reply_markup=admin_home_kb())
             return
         await state.set_state(AdminAddProductStates.waiting_country)
-        await state.update_data(add_flow_id=flow_id)
-        await progress.edit_text("2FA принята.\n\nВыберите страну каталога для товара.", reply_markup=country_select_kb(country_rows))
+        await state.update_data(add_flow_id=flow_id, add_country_search_query="")
+        await progress.edit_text("2FA принята.\n\nВыберите страну каталога для товара.", reply_markup=markup)
 
 
 @dp.message(AdminAddProductStates.waiting_title)
@@ -7859,6 +7906,74 @@ async def admin_add_country(query: CallbackQuery, state: FSMContext):
     )
 
 
+@dp.callback_query(F.data.startswith("add_country_page"))
+async def admin_add_country_page(query: CallbackQuery, state: FSMContext):
+    if await state.get_state() != AdminAddProductStates.waiting_country.state:
+        await query.answer("Сейчас страна не выбирается.", show_alert=True)
+        return
+    flow_id, page = parse_add_country_page_callback(query.data or "")
+    if not await check_add_flow_id(query, state, flow_id):
+        return
+    data = await state.get_data()
+    search_query = str(data.get("add_country_search_query") or "")
+    markup, total = await build_country_select_markup(flow_id, page=page, search_query=search_query)
+    await query.answer()
+    text = "Выберите страну каталога для товара."
+    if search_query:
+        text += f"\n\nПоиск: <code>{html.escape(search_query)}</code>\nНайдено: <b>{total}</b>"
+    await safe_edit(query.message, text, markup)
+
+
+@dp.callback_query(F.data.startswith("add_country_search"))
+async def admin_add_country_search_start(query: CallbackQuery, state: FSMContext):
+    current_state = await state.get_state()
+    if current_state != AdminAddProductStates.waiting_country.state:
+        await query.answer("Сейчас страна не выбирается.", show_alert=True)
+        return
+    flow_id = parse_optional_flow_callback(query.data or "")
+    if not await check_add_flow_id(query, state, flow_id):
+        return
+    if (query.data or "").startswith("add_country_search_clear"):
+        await state.update_data(add_country_search_query="")
+        markup, _total = await build_country_select_markup(flow_id)
+        await query.answer("Поиск сброшен.")
+        await safe_edit(query.message, "Выберите страну каталога для товара.", markup)
+        return
+    await state.set_state(AdminAddProductStates.waiting_country_search)
+    await state.update_data(add_flow_id=flow_id)
+    await query.answer()
+    await safe_edit(
+        query.message,
+        "<b>Поиск страны</b>\n\nОтправьте название страны или часть названия.",
+        cancel_flow_kb("admin_home"),
+    )
+
+
+@dp.message(AdminAddProductStates.waiting_country_search)
+async def admin_add_country_search_finish(message: Message, state: FSMContext):
+    query_text = (message.text or "").strip()
+    if not query_text:
+        await message.answer("Введите название страны или часть названия.", reply_markup=cancel_flow_kb("admin_home"))
+        return
+    data = await state.get_data()
+    flow_id = data.get("add_flow_id")
+    markup, total = await build_country_select_markup(str(flow_id) if flow_id else None, search_query=query_text)
+    await state.set_state(AdminAddProductStates.waiting_country)
+    await state.update_data(add_country_search_query=query_text)
+    if not total:
+        await message.answer(
+            f"<b>Страна не найдена</b>\n\nЗапрос: <code>{html.escape(query_text)}</code>",
+            reply_markup=markup,
+        )
+        return
+    await message.answer(
+        f"<b>Выберите страну каталога для товара.</b>\n\n"
+        f"Поиск: <code>{html.escape(query_text)}</code>\n"
+        f"Найдено: <b>{total}</b>",
+        reply_markup=markup,
+    )
+
+
 @dp.callback_query(F.data.startswith("add_department_back"))
 async def admin_add_department_back(query: CallbackQuery, state: FSMContext):
     if await state.get_state() != AdminAddProductStates.waiting_department.state:
@@ -7869,7 +7984,9 @@ async def admin_add_department_back(query: CallbackQuery, state: FSMContext):
         return
     await query.answer()
     await state.set_state(AdminAddProductStates.waiting_country)
-    await safe_edit(query.message, "Выберите страну каталога для товара.", country_select_kb(await build_country_select_rows(flow_id)))
+    markup, _total = await build_country_select_markup(flow_id)
+    await state.update_data(add_country_search_query="")
+    await safe_edit(query.message, "Выберите страну каталога для товара.", markup)
 
 
 @dp.callback_query(F.data.startswith("add_department_new"))

@@ -607,8 +607,28 @@ def admin_country_remove_confirm_kb(country_id: int) -> InlineKeyboardMarkup:
     )
 
 
-def country_select_kb(country_rows: list[list[InlineKeyboardButton]]) -> InlineKeyboardMarkup:
+def country_select_kb(
+    country_rows: list[list[InlineKeyboardButton]],
+    *,
+    page: int = 0,
+    total_pages: int = 1,
+    flow_id: str | None = None,
+    search_active: bool = False,
+) -> InlineKeyboardMarkup:
     rows = list(country_rows)
+    nav = []
+    page_prefix = f"add_country_page:{flow_id}" if flow_id else "add_country_page"
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="<", callback_data=f"{page_prefix}:{page - 1}"))
+    if total_pages > 1:
+        nav.append(InlineKeyboardButton(text=f"{page + 1}/{max(total_pages, 1)}", callback_data="noop"))
+    if page + 1 < total_pages:
+        nav.append(InlineKeyboardButton(text=">", callback_data=f"{page_prefix}:{page + 1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton(text="Поиск", callback_data=f"add_country_search:{flow_id}" if flow_id else "add_country_search")])
+    if search_active:
+        rows.append([InlineKeyboardButton(text="Сбросить поиск", callback_data=f"add_country_search_clear:{flow_id}" if flow_id else "add_country_search_clear")])
     rows.append([InlineKeyboardButton(text="Отменить", callback_data="cancel_flow:admin_home", icon_custom_emoji_id=BTN_ICON_CANCEL)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

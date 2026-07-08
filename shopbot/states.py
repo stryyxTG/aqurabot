@@ -10,6 +10,7 @@ class AdminAddProductStates(StatesGroup):
     waiting_code = State()
     waiting_password = State()
     waiting_country = State()
+    waiting_country_search = State()
     waiting_department = State()
     waiting_title = State()
     waiting_price = State()
