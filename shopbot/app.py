@@ -1749,6 +1749,24 @@ def dead_product_reason(error: str) -> str:
     return "Проверка Telethon вернула ошибку, товар снят с выдачи."
 
 
+def failed_check_requires_removal(error: str) -> bool:
+    text = str(error or "").casefold()
+    fatal_markers = (
+        "сессия не найдена",
+        "не авториз",
+        "session not found",
+        "not authorized",
+        "unauthor",
+        "authkey",
+        "auth key",
+        "banned",
+        "забан",
+        "deactivated",
+        "deleted",
+    )
+    return any(marker in text for marker in fatal_markers)
+
+
 def dead_product_report_text(product, error: str, context: str) -> str:
     def present(value: object) -> str:
         text_value = str(value or "").strip()
@@ -1811,6 +1829,27 @@ async def notify_dead_product_to_admins(product, error: str, context: str) -> No
             logger.exception("Could not notify admin %s about dead product #%s", admin_id, product["product_id"])
 
 
+async def mark_product_dead_after_failed_check(product, error: str, context: str) -> bool:
+    product_id = int(product["product_id"])
+    previous_status = str(product["status"] or "")
+    can_mark_dead = previous_status in {"available", "waiting_code", "verifying"}
+    changed = False
+    if previous_status != "dead" and can_mark_dead:
+        changed = await update_product_status(product_id, "dead")
+    if changed:
+        await notify_dead_product_to_admins(product, error, context)
+    logger.warning(
+        "Product failed verification | product=%s | phone=%s | old_status=%s | marked_dead=%s | reason=%s | context=%s",
+        product_id,
+        mask_phone(product["phone"]),
+        previous_status or "-",
+        changed,
+        str(error or "unknown"),
+        context,
+    )
+    return changed
+
+
 async def verify_product_alive_for_sale(product, *, context: str) -> bool:
     product_id = int(product["product_id"])
     result = await session_manager.verify_account_alive(product_id)
@@ -1824,8 +1863,7 @@ async def verify_product_alive_for_sale(product, *, context: str) -> bool:
         )
         return True
     error = result.get("error", "Неизвестная ошибка")
-    await update_product_status(product_id, "dead")
-    await notify_dead_product_to_admins(product, error, context)
+    await mark_product_dead_after_failed_check(product, error, context)
     return False
 
 
@@ -5297,11 +5335,36 @@ async def admin_verify_account(query: CallbackQuery):
                 f"Username: <b>{result['username']}</b>"
             )
         else:
-            status_text = f"<b>Товар не прошел проверку</b>\n\n{result['error']}"
+            error = result.get("error", "Unknown error")
+            if failed_check_requires_removal(error):
+                marked_dead = await mark_product_dead_after_failed_check(
+                    product,
+                    error,
+                    f"Ручная проверка администратором {query.from_user.id}",
+                )
+                status_line = "снят с продажи" if marked_dead else f"не изменен ({html.escape(str(product['status'] or '—'))})"
+                status_text = (
+                    "<b>Товар не прошел проверку</b>\n\n"
+                    f"{html.escape(str(error))}\n\n"
+                    f"<b>Статус:</b> {status_line}"
+                )
+            else:
+                logger.warning(
+                    "Product verification failed without removal | product=%s | phone=%s | reason=%s",
+                    product_id,
+                    mask_phone(product["phone"]),
+                    str(error or "unknown"),
+                )
+                status_text = (
+                    "<b>Товар не прошел проверку</b>\n\n"
+                    f"{html.escape(str(error))}\n\n"
+                    "<b>Статус:</b> временная ошибка, товар не снят"
+                )
         
-        has_session = has_server_session(product)
-        can_fetch_code = has_session and product["status"] in {"waiting_code", "verifying", "sold"}
-        can_claim = product["status"] in {"available", "waiting_code"}
+        current_product = await get_product(product_id) or product
+        has_session = has_server_session(current_product)
+        can_fetch_code = has_session and current_product["status"] in {"waiting_code", "verifying", "sold"}
+        can_claim = current_product["status"] in {"available", "waiting_code"}
         await safe_edit(
             query.message,
             status_text,
@@ -5494,7 +5557,8 @@ async def admin_scan_start(query: CallbackQuery, state: FSMContext):
             f"Проверяю: <b>{idx}/{total}</b>\n"
             f"Товар: <code>#{p['product_id']}</code>\n"
             f"Успешно: <b>{success}</b>\n"
-            f"Ошибок: <b>{len(failed_data)}</b>\n\n"
+            f"Снято: <b>{len(failed_data)}</b>\n"
+            f"Временных ошибок: <b>{len(skipped_data)}</b>\n\n"
             f"Интервал между товарами: <b>{interval} сек</b>",
         )
         try:
@@ -5508,7 +5572,16 @@ async def admin_scan_start(query: CallbackQuery, state: FSMContext):
                 )
                 success += 1
             else:
-                failed_data[p["product_id"]] = res.get("error", "Unknown error")
+                error = res.get("error", "Unknown error")
+                if failed_check_requires_removal(error):
+                    await mark_product_dead_after_failed_check(
+                        p,
+                        error,
+                        f"Глубокая проверка товаров администратором {query.from_user.id}",
+                    )
+                    failed_data[p["product_id"]] = f"Снят с продажи: {error}"
+                else:
+                    skipped_data[p["product_id"]] = f"Временная ошибка, не снят: {error}"
         except Exception as exc:
             skipped_data[p["product_id"]] = str(exc) or type(exc).__name__
             logger.exception("Deep product scan failed unexpectedly | product=%s", p["product_id"])
@@ -5526,7 +5599,9 @@ async def admin_scan_start(query: CallbackQuery, state: FSMContext):
         f"<b>Сканирование завершено</b>\n\n"
         f"Проверено: <b>{total}</b>\n"
         f"Успешно: <b>{success}</b>\n"
-        f"Ошибок: <b>{len(all_errors)}</b>\n\n"
+        f"Снято с продажи: <b>{len(failed_data)}</b>\n"
+        f"Временных ошибок: <b>{len(skipped_data)}</b>\n"
+        f"Всего ошибок: <b>{len(all_errors)}</b>\n\n"
         f"Интервал: <b>{interval} сек</b>\n"
         f"Лимит: <b>{admin_scan_limit_label(limit)}</b>",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=kb)
