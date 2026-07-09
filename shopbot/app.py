@@ -5510,7 +5510,7 @@ async def admin_verify_account(query: CallbackQuery):
         
         current_product = await get_product(product_id) or product
         has_session = has_server_session(current_product)
-        can_fetch_code = has_session and current_product["status"] in {"waiting_code", "verifying", "sold"}
+        can_fetch_code = has_session
         can_claim = current_product["status"] in {"available", "waiting_code"}
         await safe_edit(
             query.message,
@@ -5882,7 +5882,7 @@ async def admin_product_search_process(message: Message, state: FSMContext):
     if len(products) == 1:
         product = products[0]
         has_session = has_server_session(product)
-        can_fetch_code = has_session and product["status"] in {"waiting_code", "verifying", "sold"}
+        can_fetch_code = has_session
         can_claim = product["status"] in {"available", "waiting_code"}
         await message.answer(
             product_admin_text(product),
@@ -7670,7 +7670,7 @@ async def admin_stock_product_detail(query: CallbackQuery):
         return
 
     has_session = has_server_session(product)
-    can_fetch_code = has_session and product["status"] in {"waiting_code", "verifying", "sold"}
+    can_fetch_code = has_session
     can_claim = product["status"] in {"available", "waiting_code"}
     await safe_edit(
         query.message,
@@ -7861,7 +7861,7 @@ async def admin_terminate_sessions_confirm(query: CallbackQuery):
             product_id,
             back_callback=f"admin_stock_product:{product_id}",
             can_terminate_sessions=has_server_session(product),
-            can_fetch_code=has_server_session(product) and product["status"] in {"waiting_code", "verifying", "sold"},
+            can_fetch_code=has_server_session(product),
             can_claim=product["status"] in {"available", "waiting_code"},
         ),
     )
