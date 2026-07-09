@@ -1734,7 +1734,22 @@ async def get_owned_sold_product(user_id: int, product_id: int):
     return product
 
 
-async def notify_dead_product_to_admins(product, error: str, context: str) -> None:
+def dead_product_reason(error: str) -> str:
+    text = str(error or "").casefold()
+    if "сессия не найдена" in text or ("session" in text and "not found" in text):
+        return "Файл session отсутствует или недоступен на сервере."
+    if "не авториз" in text or "unauthor" in text or "authkey" in text or "auth key" in text:
+        return "Session разлогинена: Telegram не считает ее авторизованной."
+    if "banned" in text or "забан" in text or "deactivated" in text or "deleted" in text:
+        return "Аккаунт забанен, удален или деактивирован Telegram."
+    if "flood" in text or "wait" in text:
+        return "Telegram временно ограничил проверку, нужен повтор позже."
+    if "proxy" in text or "timeout" in text or "timed out" in text or "connect" in text:
+        return "Проверка не смогла подключиться к Telegram, возможна проблема прокси или сети."
+    return "Проверка Telethon вернула ошибку, товар снят с выдачи."
+
+
+def dead_product_report_text(product, error: str, context: str) -> str:
     def present(value: object) -> str:
         text_value = str(value or "").strip()
         return html.escape(text_value) if text_value else "отсутствует"
@@ -1744,22 +1759,51 @@ async def notify_dead_product_to_admins(product, error: str, context: str) -> No
     twofa_text = "есть" if str(product["twofa_password"] or "").strip() else "отсутствует"
     username_raw = str(product["username"] or "").strip()
     username_text = f"@{html.escape(username_raw)}" if username_raw else "отсутствует"
-    text = (
-        f"{ICON_NOTICE} <b>Мёртвый товар при выдаче</b>\n\n"
-        f"<b>Контекст:</b> {html.escape(context)}\n"
-        f"<b>ID:</b> <code>{product['product_id']}</code>\n"
-        f"<b>Товар:</b> {present(product['title'])}\n"
-        f"<b>Страна:</b> {present(product['country'])}\n"
-        f"<b>Цена:</b> {fmt_money(float(product['price'] or 0))}\n"
-        f"<b>Статус до снятия:</b> {present(product['status'])}\n"
-        f"<b>Телефон:</b> <code>{present(product['phone'])}</code>\n"
-        f"<b>Telegram ID:</b> <code>{present(product['telegram_id'])}</code>\n"
-        f"<b>Username:</b> {username_text}\n"
-        f"<b>Имя:</b> {present(product['first_name'])}\n"
-        f"<b>2FA:</b> {twofa_text}\n"
+    buyer_text = f"<code>{product['sold_to']}</code>" if product["sold_to"] else "—"
+    sold_at = fmt_local_datetime(product["sold_at"])
+    created_at = fmt_local_datetime(product["created_at"])
+    checked_at = datetime.now(DISPLAY_TZ).strftime("%d.%m.%Y %H:%M:%S GMT+3")
+    reason = dead_product_reason(error)
+    return (
+        f"{ICON_NOTICE} <b>МЁРТВЫЙ ТОВАР СНЯТ С ВЫДАЧИ</b>\n\n"
+        f"<b>Коротко:</b> {html.escape(reason)}\n"
+        f"<b>Действие бота:</b> товар переведен в статус <code>dead</code>, покупателю не выдан.\n\n"
+        f"<b>Товар</b>\n"
+        f"• <b>ID:</b> <code>{product['product_id']}</code>\n"
+        f"• <b>Название:</b> {present(product['title'])}\n"
+        f"• <b>Страна:</b> {present(product['country'])}\n"
+        f"• <b>Цена:</b> {fmt_money(float(product['price'] or 0))}\n"
+        f"• <b>Статус до проверки:</b> {present(product['status'])}\n\n"
+        f"<b>Аккаунт</b>\n"
+        f"• <b>Телефон:</b> <code>{present(product['phone'])}</code>\n"
+        f"• <b>Telegram ID:</b> <code>{present(product['telegram_id'])}</code>\n"
+        f"• <b>Username:</b> {username_text}\n"
+        f"• <b>Имя:</b> {present(product['first_name'])}\n"
+        f"• <b>2FA:</b> {twofa_text}\n\n"
+        f"<b>Контекст</b>\n"
+        f"<b>Сценарий:</b> {html.escape(context)}\n"
+        f"<b>Покупатель:</b> {buyer_text}\n"
+        f"<b>Залит:</b> {created_at}\n"
+        f"<b>Продан/забронирован:</b> {sold_at}\n"
+        f"<b>Проверен:</b> {checked_at}\n"
         f"<b>Session:</b> <code>{session_text}</code>\n\n"
-        f"<b>Ошибка проверки:</b>\n<code>{html.escape(str(error or 'unknown'))}</code>"
+        f"<b>Техническая ошибка:</b>\n<code>{html.escape(str(error or 'unknown'))}</code>"
     )
+
+
+async def notify_dead_product_to_admins(product, error: str, context: str) -> None:
+    text = dead_product_report_text(product, error, context)
+    try:
+        await bot.send_message(LOG_CHANNEL_ID, text)
+        logger.info(
+            "Dead product report sent to log channel | product=%s | phone=%s | reason=%s",
+            product["product_id"],
+            mask_phone(product["phone"]),
+            dead_product_reason(error),
+        )
+    except Exception:
+        logger.exception("Could not send dead product report to log channel | product=%s", product["product_id"])
+
     for admin_id in settings.admin_ids:
         try:
             await bot.send_message(admin_id, text)
