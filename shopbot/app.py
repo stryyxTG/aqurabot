@@ -2246,7 +2246,7 @@ async def build_admin_country_rows(
     for row in counts:
         rows.append([
             InlineKeyboardButton(
-                text=country_button_label(row["country"], row["total"], row["icon_text"]),
+                text=country_button_label(row["country"], row["total"], row["icon_text"], row["min_price"]),
                 callback_data=f"admin_country:{row['country_id']}",
                 icon_custom_emoji_id=row["icon_custom_emoji_id"],
             )
