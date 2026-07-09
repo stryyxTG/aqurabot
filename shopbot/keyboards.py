@@ -776,7 +776,7 @@ def admin_countries_available_kb(
         nav.append(InlineKeyboardButton(text=">", callback_data=f"{page_prefix}:{page + 1}"))
     if nav:
         rows.append(nav)
-    rows.append([InlineKeyboardButton(text="Поиск по названию", callback_data="admin_stock_search")])
+    rows.append([InlineKeyboardButton(text="Поиск", callback_data="admin_stock_search")])
     rows.append([InlineKeyboardButton(text="Сортировка", callback_data="admin_stock_sort")])
     rows.append([InlineKeyboardButton(text="Назад", callback_data=back_callback, icon_custom_emoji_id=BTN_ICON_BACK)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
