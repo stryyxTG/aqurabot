@@ -53,6 +53,9 @@ class AdminSearchUserStates(StatesGroup):
 class AdminSearchProductStates(StatesGroup):
     waiting_product_query = State()
 
+class AdminStockStates(StatesGroup):
+    waiting_country_query = State()
+
 class AdminDropsStates(StatesGroup):
     waiting_user_id = State()
 

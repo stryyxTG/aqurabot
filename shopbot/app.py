@@ -195,7 +195,7 @@ from .session_metadata import (
     write_original_session_json,
     write_session_metadata,
 )
-from .states import AdminAddProductStates, AdminBroadcastStates, AdminCardsStates, AdminCatalogStates, AdminCleanStates, AdminProxyStates, AdminTopUpStates, AdminEditProductStates, AdminEditProductGroupStates, AdminSearchUserStates, AdminSearchProductStates, AdminDropsStates, UserTopUpStates, UserCartStates, UserCatalogStates, ServiceOrderStates, AdminScanStates
+from .states import AdminAddProductStates, AdminBroadcastStates, AdminCardsStates, AdminCatalogStates, AdminCleanStates, AdminProxyStates, AdminTopUpStates, AdminEditProductStates, AdminEditProductGroupStates, AdminSearchUserStates, AdminSearchProductStates, AdminStockStates, AdminDropsStates, UserTopUpStates, UserCartStates, UserCatalogStates, ServiceOrderStates, AdminScanStates
 
 
 configure_logging()
@@ -273,6 +273,8 @@ dp = Dispatcher(storage=MemoryStorage())
 session_manager = ShopSessionManager(settings)
 country_search_cache: dict[int, str] = {}
 catalog_country_sort_modes: dict[int, str] = {}
+admin_stock_search_cache: dict[int, str] = {}
+admin_stock_sort_modes: dict[int, str] = {}
 
 
 def topup_methods_keyboard() -> InlineKeyboardMarkup:
@@ -2129,6 +2131,34 @@ def catalog_filter_menu_text(sort_mode: str | None) -> str:
     )
 
 
+def admin_stock_sort_menu_kb(sort_mode: str | None) -> InlineKeyboardMarkup:
+    sort_mode = str(sort_mode or "")
+    cheap_text = "Сначала дешевые" + (" ✓" if sort_mode == "price_asc" else "")
+    expensive_text = "Сначала дорогие" + (" ✓" if sort_mode == "price_desc" else "")
+    alpha_text = "По алфавиту" + (" ✓" if sort_mode == "country_asc" else "")
+    rows = [
+        [
+            InlineKeyboardButton(text=cheap_text, callback_data="admin_stock_sort_set:price_asc"),
+            InlineKeyboardButton(text=expensive_text, callback_data="admin_stock_sort_set:price_desc"),
+        ],
+        [InlineKeyboardButton(text=alpha_text, callback_data="admin_stock_sort_set:country_asc")],
+        [InlineKeyboardButton(text="Показать страны", callback_data="admin_stock_catalog", icon_custom_emoji_id=BTN_ICON_CHECK)],
+    ]
+    if sort_mode:
+        rows.append([InlineKeyboardButton(text="Сбросить сортировку", callback_data="admin_stock_sort_clear", icon_custom_emoji_id=BTN_ICON_CANCEL)])
+    rows.append([InlineKeyboardButton(text="Назад к товарам", callback_data="admin_stock_catalog", icon_custom_emoji_id=BTN_ICON_BACK)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_stock_sort_menu_text(sort_mode: str | None) -> str:
+    current_text = format_catalog_country_sort(sort_mode) or "\n<b>Сортировка:</b> не задана"
+    return (
+        "<b>Сортировка стран в товарах</b>\n\n"
+        "Выберите порядок показа стран в админке."
+        f"{current_text}"
+    )
+
+
 def clamp_page(page: int, total_items: int, page_size: int) -> tuple[int, int]:
     total_pages = max(1, math.ceil(max(total_items, 0) / max(page_size, 1)))
     return min(max(0, page), total_pages - 1), total_pages
@@ -2193,8 +2223,21 @@ async def build_admin_catalog_keyboard(*, page: int = 0) -> InlineKeyboardMarkup
     return admin_catalog_kb(rows, page=page, total_pages=total_pages)
 
 
-async def build_admin_stock_country_rows(*, page: int = 0) -> tuple[list[list[InlineKeyboardButton]], int, int, int]:
-    counts = [row for row in await list_country_counts() if int(row["total"] or 0) > 0]
+async def build_admin_stock_country_rows(
+    *,
+    page: int = 0,
+    search_query: str | None = None,
+    sort_mode: str | None = None,
+) -> tuple[list[list[InlineKeyboardButton]], int, int, int]:
+    query = normalize_country_search(search_query)
+    counts = []
+    for row in await list_country_counts():
+        if int(row["total"] or 0) <= 0:
+            continue
+        if query and query not in normalize_country_search(row["country"]):
+            continue
+        counts.append(row)
+    counts = sort_country_count_rows(counts, sort_mode)
     total = len(counts)
     page, total_pages = clamp_page(page, total, COUNTRY_PAGE_SIZE)
     start = page * COUNTRY_PAGE_SIZE
@@ -2211,11 +2254,33 @@ async def build_admin_stock_country_rows(*, page: int = 0) -> tuple[list[list[In
     return rows, page, total_pages, total
 
 
-async def build_admin_stock_catalog_keyboard(*, page: int = 0) -> tuple[InlineKeyboardMarkup, int, int]:
-    rows, page, total_pages, total = await build_admin_stock_country_rows(page=page)
+async def build_admin_stock_catalog_keyboard(
+    *,
+    user_id: int | None = None,
+    page: int = 0,
+    search_query: str | None = None,
+    page_prefix: str = "admin_stock_catalog",
+    back_callback: str = "admin_home",
+) -> tuple[InlineKeyboardMarkup, int, int]:
+    sort_mode = admin_stock_sort_modes.get(int(user_id)) if user_id is not None else None
+    rows, page, total_pages, total = await build_admin_stock_country_rows(
+        page=page,
+        search_query=search_query,
+        sort_mode=sort_mode,
+    )
     if not rows:
         rows = [[InlineKeyboardButton(text="Нет товаров в наличии", callback_data="noop")]]
-    return admin_countries_available_kb(rows, page=page, total_pages=total_pages), page, total
+    return (
+        admin_countries_available_kb(
+            rows,
+            page=page,
+            total_pages=total_pages,
+            page_prefix=page_prefix,
+            back_callback=back_callback,
+        ),
+        page,
+        total,
+    )
 
 
 async def catalog_country_name_exists(name: str, *, except_country_id: int | None = None) -> bool:
@@ -6974,11 +7039,125 @@ async def admin_stock_catalog(query: CallbackQuery):
             page = max(0, int((query.data or "").rsplit(":", 1)[1]))
         except ValueError:
             page = 0
-    markup, page, total = await build_admin_stock_catalog_keyboard(page=page)
+    markup, page, total = await build_admin_stock_catalog_keyboard(user_id=query.from_user.id, page=page)
     text = "<b>Товары по странам</b>\n\nВыберите страну:"
     if total:
         text += f"\nВсего регионов с товаром: <b>{total}</b>"
+    text += format_catalog_country_sort(admin_stock_sort_modes.get(query.from_user.id))
     await safe_edit(query.message, text, markup)
+
+
+@dp.callback_query(F.data == "admin_stock_search")
+async def admin_stock_search_start(query: CallbackQuery, state: FSMContext):
+    await ensure_known_user(query)
+    await query.answer()
+    if not is_admin(query.from_user.id):
+        return
+    await state.set_state(AdminStockStates.waiting_country_query)
+    await safe_edit(
+        query.message,
+        "<b>Поиск страны в товарах</b>\n\nОтправьте название страны или часть названия.",
+        cancel_flow_kb("admin_stock_catalog"),
+    )
+
+
+@dp.message(AdminStockStates.waiting_country_query)
+async def admin_stock_search_finish(message: Message, state: FSMContext):
+    await ensure_known_user(message)
+    if not is_admin(message.from_user.id):
+        return
+    query_text = (message.text or "").strip()
+    if not query_text:
+        await message.answer("Введите название страны или часть названия.", reply_markup=cancel_flow_kb("admin_stock_catalog"))
+        return
+    admin_stock_search_cache[message.from_user.id] = query_text
+    markup, page, total = await build_admin_stock_catalog_keyboard(
+        user_id=message.from_user.id,
+        page=0,
+        search_query=query_text,
+        page_prefix="admin_stock_search_page",
+        back_callback="admin_stock_catalog",
+    )
+    await state.clear()
+    text = (
+        "<b>Результаты поиска стран</b>\n\n"
+        f"Запрос: <code>{html.escape(query_text)}</code>\n"
+        f"Найдено: <b>{total}</b>"
+        f"{format_catalog_country_sort(admin_stock_sort_modes.get(message.from_user.id))}"
+    )
+    await message.answer(text, reply_markup=markup)
+
+
+@dp.callback_query(F.data.startswith("admin_stock_search_page:"))
+async def admin_stock_search_page(query: CallbackQuery):
+    await ensure_known_user(query)
+    await query.answer()
+    if not is_admin(query.from_user.id):
+        return
+    query_text = admin_stock_search_cache.get(query.from_user.id, "")
+    if not query_text:
+        await query.answer("Поиск устарел. Введите запрос заново.", show_alert=True)
+        return
+    try:
+        page = max(0, int((query.data or "").rsplit(":", 1)[1]))
+    except ValueError:
+        page = 0
+    markup, page, total = await build_admin_stock_catalog_keyboard(
+        user_id=query.from_user.id,
+        page=page,
+        search_query=query_text,
+        page_prefix="admin_stock_search_page",
+        back_callback="admin_stock_catalog",
+    )
+    text = (
+        "<b>Результаты поиска стран</b>\n\n"
+        f"Запрос: <code>{html.escape(query_text)}</code>\n"
+        f"Найдено: <b>{total}</b>"
+        f"{format_catalog_country_sort(admin_stock_sort_modes.get(query.from_user.id))}"
+    )
+    await safe_edit(query.message, text, markup)
+
+
+@dp.callback_query(F.data == "admin_stock_sort")
+async def admin_stock_sort_menu(query: CallbackQuery, state: FSMContext):
+    await ensure_known_user(query)
+    await query.answer()
+    if not is_admin(query.from_user.id):
+        return
+    await state.clear()
+    sort_mode = admin_stock_sort_modes.get(query.from_user.id)
+    await safe_edit(query.message, admin_stock_sort_menu_text(sort_mode), admin_stock_sort_menu_kb(sort_mode))
+
+
+@dp.callback_query(F.data.startswith("admin_stock_sort_set:"))
+async def admin_stock_sort_set(query: CallbackQuery, state: FSMContext):
+    await ensure_known_user(query)
+    await query.answer()
+    if not is_admin(query.from_user.id):
+        return
+    await state.clear()
+    sort_mode = (query.data or "").split(":", 1)[1]
+    if sort_mode not in {"price_asc", "price_desc", "country_asc"}:
+        await query.answer("Сортировка не найдена.", show_alert=True)
+        return
+    admin_stock_sort_modes[query.from_user.id] = sort_mode
+    markup, _page, total = await build_admin_stock_catalog_keyboard(user_id=query.from_user.id)
+    text = "<b>Товары по странам</b>\n\nВыберите страну:"
+    if total:
+        text += f"\nВсего регионов с товаром: <b>{total}</b>"
+    text += format_catalog_country_sort(sort_mode)
+    await safe_edit(query.message, text, markup)
+
+
+@dp.callback_query(F.data == "admin_stock_sort_clear")
+async def admin_stock_sort_clear(query: CallbackQuery, state: FSMContext):
+    await ensure_known_user(query)
+    await query.answer()
+    if not is_admin(query.from_user.id):
+        return
+    await state.clear()
+    admin_stock_sort_modes.pop(query.from_user.id, None)
+    await safe_edit(query.message, admin_stock_sort_menu_text(None), admin_stock_sort_menu_kb(None))
 
 
 @dp.callback_query(F.data.startswith("admin_stock_country:"))
@@ -8713,6 +8892,13 @@ async def cancel_flow(query: CallbackQuery, state: FSMContext):
             f"<b>Лимит:</b> {admin_scan_limit_label(SCAN_DEFAULT_LIMIT)}",
             admin_scan_settings_kb(SCAN_DEFAULT_INTERVAL, SCAN_DEFAULT_LIMIT),
         )
+    elif back_callback == "admin_stock_catalog":
+        markup, _page, total = await build_admin_stock_catalog_keyboard(user_id=query.from_user.id)
+        text = "<b>Товары по странам</b>\n\nВыберите страну:"
+        if total:
+            text += f"\nВсего регионов с товаром: <b>{total}</b>"
+        text += format_catalog_country_sort(admin_stock_sort_modes.get(query.from_user.id))
+        await safe_edit(query.message, text, markup)
     elif back_callback == "menu_balance":
         text = (
             f"{ICON_COIN} <b>Баланс:</b> {fmt_money(await get_balance(query.from_user.id))}"
