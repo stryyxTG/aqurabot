@@ -2082,58 +2082,15 @@ def parse_catalog_filter_callback(data: str | None) -> tuple[int | None, str]:
     return None, "all"
 
 
-def parse_catalog_product_filter(text: str) -> dict[str, object]:
-    raw = (text or "").strip()
-    normalized = raw.replace(",", ".")
-    filters: dict[str, object] = {}
-    patterns = {
-        "min_price": r"(?:^|[\s;\n])(?:мин|от|min)\s*[:=]?\s*([0-9]+(?:\.[0-9]+)?)",
-        "max_price": r"(?:^|[\s;\n])(?:макс|до|max)\s*[:=]?\s*([0-9]+(?:\.[0-9]+)?)",
-        "min_qty": r"(?:^|[\s;\n])(?:кол|к-во|количество|шт|qty)\s*[:=]?\s*(\d+)",
-    }
-    cleaned = normalized
-    for key, pattern in patterns.items():
-        match = re.search(pattern, cleaned, flags=re.IGNORECASE)
-        if not match:
-            continue
-        value = parse_float(match.group(1)) if key != "min_qty" else int(match.group(1))
-        if value is not None:
-            filters[key] = value
-        cleaned = re.sub(pattern, " ", cleaned, count=1, flags=re.IGNORECASE)
-
-    name_match = re.search(r"(?:^|[\s;\n])(?:название|товар|поиск|name)\s*[:=]\s*([^\n;]+)", cleaned, flags=re.IGNORECASE)
-    if name_match:
-        filters["title"] = " ".join(name_match.group(1).strip().split())
-        cleaned = re.sub(r"(?:^|[\s;\n])(?:название|товар|поиск|name)\s*[:=]\s*[^\n;]+", " ", cleaned, count=1, flags=re.IGNORECASE)
-    else:
-        title = " ".join(cleaned.strip(" ;\n\t").split())
-        if title:
-            filters["title"] = title
-
-    return filters
-
-
 def apply_catalog_product_filters(items: list[dict], filters: dict[str, object] | None) -> list[dict]:
     if not filters:
         return items
-    title_filter = normalize_country_search(filters.get("title"))
-    min_price = filters.get("min_price")
-    max_price = filters.get("max_price")
-    min_qty = filters.get("min_qty")
-    result = []
-    for item in items:
-        title = normalize_country_search(item.get("title"))
-        price = float(item.get("price") or 0)
-        qty = int(item.get("stock_count") or 0)
-        if title_filter and title_filter not in title:
-            continue
-        if min_price is not None and price < float(min_price):
-            continue
-        if max_price is not None and price > float(max_price):
-            continue
-        if min_qty is not None and qty < int(min_qty):
-            continue
-        result.append(item)
+    sort_mode = str(filters.get("sort") or "")
+    result = list(items)
+    if sort_mode == "price_asc":
+        result.sort(key=lambda item: (float(item.get("price") or 0), normalize_country_search(item.get("title"))))
+    elif sort_mode == "price_desc":
+        result.sort(key=lambda item: (-float(item.get("price") or 0), normalize_country_search(item.get("title"))))
     return result
 
 
@@ -2141,131 +2098,41 @@ def format_catalog_filter(filters: dict[str, object] | None) -> str:
     if not filters:
         return ""
     parts = []
-    if filters.get("title"):
-        parts.append(f"название: <code>{html.escape(str(filters['title']))}</code>")
-    if filters.get("min_price") is not None:
-        parts.append(f"от {fmt_money(float(filters['min_price']))}")
-    if filters.get("max_price") is not None:
-        parts.append(f"до {fmt_money(float(filters['max_price']))}")
-    if filters.get("min_qty") is not None:
-        parts.append(f"кол-во от {int(filters['min_qty'])}")
-    return "\n<b>Фильтр:</b> " + ", ".join(parts) if parts else ""
+    if filters.get("sort") == "price_asc":
+        parts.append("сначала дешевые")
+    if filters.get("sort") == "price_desc":
+        parts.append("сначала дорогие")
+    return "\n<b>Выбрано:</b> " + ", ".join(parts) if parts else ""
 
 
 def catalog_filter_back_callback(country_id: int | None) -> str:
     return "catalog_all_0" if country_id is None else f"catalog_country:{country_id}:0"
 
 
-def catalog_filter_field_label(filters: dict[str, object] | None, field: str) -> str:
-    filters = filters or {}
-    if field == "title":
-        value = str(filters.get("title") or "").strip()
-        return f"Название: {plain_button_text(value)[:24]}" if value else "Название"
-    if field == "min_price":
-        value = filters.get("min_price")
-        return f"Цена от: {fmt_money(float(value))}" if value is not None else "Цена от"
-    if field == "max_price":
-        value = filters.get("max_price")
-        return f"Цена до: {fmt_money(float(value))}" if value is not None else "Цена до"
-    if field == "min_qty":
-        value = filters.get("min_qty")
-        return f"Кол-во от: {int(value)}" if value is not None else "Кол-во от"
-    return "Фильтр"
-
-
 def catalog_filter_menu_kb(scope: str, country_id: int | None, filters: dict[str, object] | None) -> InlineKeyboardMarkup:
+    sort_mode = str((filters or {}).get("sort") or "")
+    cheap_text = "Сначала дешевые" + (" ✓" if sort_mode == "price_asc" else "")
+    expensive_text = "Сначала дорогие" + (" ✓" if sort_mode == "price_desc" else "")
     rows = [
-        [InlineKeyboardButton(text=catalog_filter_field_label(filters, "title"), callback_data=f"catalog_filter_field:{scope}:title")],
         [
-            InlineKeyboardButton(text=catalog_filter_field_label(filters, "min_price"), callback_data=f"catalog_filter_field:{scope}:min_price"),
-            InlineKeyboardButton(text=catalog_filter_field_label(filters, "max_price"), callback_data=f"catalog_filter_field:{scope}:max_price"),
+            InlineKeyboardButton(text=cheap_text, callback_data=f"catalog_filter_sort:{scope}:price_asc"),
+            InlineKeyboardButton(text=expensive_text, callback_data=f"catalog_filter_sort:{scope}:price_desc"),
         ],
-        [InlineKeyboardButton(text=catalog_filter_field_label(filters, "min_qty"), callback_data=f"catalog_filter_field:{scope}:min_qty")],
         [InlineKeyboardButton(text="Показать товары", callback_data=f"catalog_filter_apply:{scope}", icon_custom_emoji_id=BTN_ICON_CHECK)],
     ]
     if filters:
-        rows.append([InlineKeyboardButton(text="Очистить фильтр", callback_data=f"catalog_filter_clear_menu:{scope}", icon_custom_emoji_id=BTN_ICON_CANCEL)])
+        rows.append([InlineKeyboardButton(text="Сбросить сортировку", callback_data=f"catalog_filter_clear_menu:{scope}", icon_custom_emoji_id=BTN_ICON_CANCEL)])
     rows.append([InlineKeyboardButton(text="Назад к товарам", callback_data=catalog_filter_back_callback(country_id), icon_custom_emoji_id=BTN_ICON_BACK)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def catalog_filter_menu_text(filters: dict[str, object] | None) -> str:
-    current_text = format_catalog_filter(filters) or "\n<b>Фильтр:</b> не задан"
+    current_text = format_catalog_filter(filters) or "\n<b>Выбрано:</b> не задано"
     return (
-        "<b>Фильтр товаров</b>\n\n"
-        "Выберите, что настроить. Бот попросит только одно значение, без сложных команд.\n\n"
-        "<b>Подсказка:</b> чтобы убрать отдельный пункт, отправьте <code>-</code>."
+        "<b>Сортировка товаров</b>\n\n"
+        "Выберите порядок показа товаров. Ничего вводить вручную не нужно."
         f"{current_text}"
     )
-
-
-def catalog_filter_field_prompt(field: str, filters: dict[str, object] | None) -> str:
-    current = filters or {}
-    if field == "title":
-        value = current.get("title") or "не задано"
-        return (
-            "<b>Название товара</b>\n\n"
-            f"Сейчас: <code>{html.escape(str(value))}</code>\n"
-            "Отправьте слово или часть названия, например <code>USA</code>.\n"
-            "Чтобы убрать фильтр по названию, отправьте <code>-</code>."
-        )
-    if field == "min_price":
-        value = fmt_money(float(current["min_price"])) if current.get("min_price") is not None else "не задано"
-        return (
-            "<b>Минимальная цена</b>\n\n"
-            f"Сейчас: <code>{html.escape(str(value))}</code>\n"
-            "Отправьте число, например <code>1.5</code>.\n"
-            "Чтобы убрать минимальную цену, отправьте <code>-</code>."
-        )
-    if field == "max_price":
-        value = fmt_money(float(current["max_price"])) if current.get("max_price") is not None else "не задано"
-        return (
-            "<b>Максимальная цена</b>\n\n"
-            f"Сейчас: <code>{html.escape(str(value))}</code>\n"
-            "Отправьте число, например <code>5</code>.\n"
-            "Чтобы убрать максимальную цену, отправьте <code>-</code>."
-        )
-    value = current.get("min_qty")
-    value_text = str(int(value)) if value is not None else "не задано"
-    return (
-        "<b>Минимальное количество</b>\n\n"
-        f"Сейчас: <code>{html.escape(value_text)}</code>\n"
-        "Отправьте целое число, например <code>10</code>.\n"
-        "Чтобы убрать фильтр по количеству, отправьте <code>-</code>."
-    )
-
-
-def apply_catalog_filter_field(filters: dict[str, object], field: str, raw_text: str) -> tuple[bool, str]:
-    value = (raw_text or "").strip()
-    if value == "-":
-        filters.pop(field, None)
-        return True, "Пункт фильтра очищен."
-    if field == "title":
-        title = " ".join(value.split())
-        if not title:
-            return False, "Отправьте название или <code>-</code>, чтобы очистить пункт."
-        filters["title"] = title
-        return True, "Название обновлено."
-    if field in {"min_price", "max_price"}:
-        price = parse_float(value)
-        if price is None:
-            return False, "Отправьте цену числом, например <code>1.5</code>."
-        if field == "min_price" and filters.get("max_price") is not None and price > float(filters["max_price"]):
-            return False, "Минимальная цена не может быть выше максимальной."
-        if field == "max_price" and filters.get("min_price") is not None and price < float(filters["min_price"]):
-            return False, "Максимальная цена не может быть ниже минимальной."
-        filters[field] = price
-        return True, "Цена обновлена."
-    if field == "min_qty":
-        try:
-            qty = int(value)
-        except ValueError:
-            return False, "Отправьте количество целым числом, например <code>10</code>."
-        if qty < 0:
-            return False, "Количество не может быть меньше нуля."
-        filters[field] = qty
-        return True, "Количество обновлено."
-    return False, "Неизвестный пункт фильтра."
 
 
 def clamp_page(page: int, total_items: int, page_size: int) -> tuple[int, int]:
@@ -4703,27 +4570,25 @@ async def catalog_filter_start(query: CallbackQuery, state: FSMContext):
     )
 
 
-@dp.callback_query(F.data.startswith("catalog_filter_field:"))
-async def catalog_filter_field_start(query: CallbackQuery, state: FSMContext):
+@dp.callback_query(F.data.startswith("catalog_filter_sort:"))
+async def catalog_filter_sort(query: CallbackQuery, state: FSMContext):
     await ensure_known_user(query)
     await query.answer()
+    await state.clear()
     try:
-        _, scope, field = query.data.split(":", 2)
+        _, scope, sort_mode = query.data.split(":", 2)
     except (AttributeError, ValueError):
-        await query.answer("Фильтр не найден.", show_alert=True)
+        await query.answer("Сортировка не найдена.", show_alert=True)
+        return
+    if sort_mode not in {"price_asc", "price_desc"}:
+        await query.answer("Сортировка не найдена.", show_alert=True)
         return
     country_id = int(scope[1:]) if scope.startswith("c") and scope[1:].isdigit() else None
-    if field not in {"title", "min_price", "max_price", "min_qty"}:
-        await query.answer("Пункт фильтра не найден.", show_alert=True)
-        return
-    current = catalog_product_filters.get((query.from_user.id, scope))
-    await state.set_state(UserCatalogStates.waiting_product_filter)
-    await state.update_data(catalog_filter_country_id=country_id, catalog_filter_scope=scope, catalog_filter_field=field)
-    await safe_edit(
-        query.message,
-        catalog_filter_field_prompt(field, current),
-        cancel_flow_kb(f"catalog_filter:{scope}"),
-    )
+    key = (query.from_user.id, scope)
+    filters = dict(catalog_product_filters.get(key) or {})
+    filters["sort"] = sort_mode
+    catalog_product_filters[key] = filters
+    await _render_product_list(query, country_id=country_id, page=0)
 
 
 @dp.callback_query(F.data.startswith("catalog_filter_apply:"))
@@ -4741,55 +4606,11 @@ async def catalog_filter_clear_menu(query: CallbackQuery, state: FSMContext):
     await state.clear()
     country_id, scope = parse_catalog_filter_callback(query.data)
     catalog_product_filters.pop((query.from_user.id, scope), None)
-    await query.answer("Фильтр очищен.")
+    await query.answer("Сортировка сброшена.")
     await safe_edit(
         query.message,
         catalog_filter_menu_text(None),
         catalog_filter_menu_kb(scope, country_id, None),
-    )
-
-
-@dp.message(UserCatalogStates.waiting_product_filter)
-async def catalog_filter_finish(message: Message, state: FSMContext):
-    await ensure_known_user(message)
-    data = await state.get_data()
-    country_id = data.get("catalog_filter_country_id")
-    country_id = int(country_id) if country_id is not None else None
-    scope = data.get("catalog_filter_scope") or catalog_filter_scope(country_id)
-    field = data.get("catalog_filter_field")
-    raw_text = (message.text or "").strip()
-    key = (message.from_user.id, str(scope))
-    if field:
-        filters = dict(catalog_product_filters.get(key) or {})
-        ok, response = apply_catalog_filter_field(filters, str(field), raw_text)
-        if not ok:
-            await message.answer(response, reply_markup=cancel_flow_kb(f"catalog_filter:{scope}"))
-            return
-        if filters:
-            catalog_product_filters[key] = filters
-        else:
-            catalog_product_filters.pop(key, None)
-        await state.clear()
-        await message.answer(
-            f"{response}\n\n{catalog_filter_menu_text(catalog_product_filters.get(key))}",
-            reply_markup=catalog_filter_menu_kb(str(scope), country_id, catalog_product_filters.get(key)),
-        )
-        return
-    if raw_text == "-":
-        catalog_product_filters.pop(key, None)
-    else:
-        filters = parse_catalog_product_filter(raw_text)
-        if not filters:
-            await message.answer(
-                "Не понял фильтр. Откройте кнопки фильтра и выберите нужный пункт.",
-                reply_markup=cancel_flow_kb(f"catalog_filter:{scope}"),
-            )
-            return
-        catalog_product_filters[key] = filters
-    await state.clear()
-    await message.answer(
-        catalog_filter_menu_text(catalog_product_filters.get(key)),
-        reply_markup=catalog_filter_menu_kb(str(scope), country_id, catalog_product_filters.get(key)),
     )
 
 
@@ -4798,7 +4619,7 @@ async def catalog_filter_clear(query: CallbackQuery):
     await ensure_known_user(query)
     country_id, scope = parse_catalog_filter_callback(query.data)
     catalog_product_filters.pop((query.from_user.id, scope), None)
-    await query.answer("Фильтр сброшен.")
+    await query.answer("Сортировка сброшена.")
     await _render_product_list(query, country_id=country_id, page=0)
 
 

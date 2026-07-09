@@ -278,7 +278,7 @@ def catalog_home_kb(
     if nav:
         rows.append(nav)
     rows.append([InlineKeyboardButton(text="Поиск", callback_data="catalog_country_search")])
-    rows.append([InlineKeyboardButton(text="Фильтр товаров", callback_data="catalog_filter:all")])
+    rows.append([InlineKeyboardButton(text="Сортировка", callback_data="catalog_filter:all")])
     rows.append([InlineKeyboardButton(text="Назад", callback_data="menu_catalog", icon_custom_emoji_id=BTN_ICON_BACK)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -376,9 +376,9 @@ def product_list_kb(
             nav.append(InlineKeyboardButton(text=">", callback_data=page_callback(page + 1)))
         rows.append(nav)
     if filter_callback:
-        rows.append([InlineKeyboardButton(text="Фильтр товаров", callback_data=filter_callback)])
+        rows.append([InlineKeyboardButton(text="Сортировка", callback_data=filter_callback)])
     if clear_filter_callback:
-        rows.append([InlineKeyboardButton(text="Сбросить фильтр", callback_data=clear_filter_callback)])
+        rows.append([InlineKeyboardButton(text="Сбросить сортировку", callback_data=clear_filter_callback)])
     rows.append([InlineKeyboardButton(text="Назад", callback_data=back_callback, icon_custom_emoji_id=BTN_ICON_BACK)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

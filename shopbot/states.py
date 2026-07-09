@@ -67,7 +67,6 @@ class UserCartStates(StatesGroup):
 
 class UserCatalogStates(StatesGroup):
     waiting_country_query = State()
-    waiting_product_filter = State()
 
 
 class ServiceOrderStates(StatesGroup):
