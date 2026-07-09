@@ -548,7 +548,7 @@ def admin_catalog_kb(
         nav.append(InlineKeyboardButton(text=">", callback_data=f"{page_prefix}:{page + 1}"))
     if nav:
         rows.append(nav)
-    rows.append([InlineKeyboardButton(text="Поиск страны", callback_data="admin_catalog_search")])
+    rows.append([InlineKeyboardButton(text="Поиск", callback_data="admin_catalog_search")])
     rows.append([InlineKeyboardButton(text="Сортировка", callback_data="admin_catalog_sort")])
     rows.append([InlineKeyboardButton(text="Добавить регион", callback_data="admin_country_add")])
     rows.append([InlineKeyboardButton(text="Назад", callback_data=back_callback, icon_custom_emoji_id=BTN_ICON_BACK)])
