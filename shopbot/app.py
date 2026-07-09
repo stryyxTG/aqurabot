@@ -2152,6 +2152,122 @@ def format_catalog_filter(filters: dict[str, object] | None) -> str:
     return "\n<b>Фильтр:</b> " + ", ".join(parts) if parts else ""
 
 
+def catalog_filter_back_callback(country_id: int | None) -> str:
+    return "catalog_all_0" if country_id is None else f"catalog_country:{country_id}:0"
+
+
+def catalog_filter_field_label(filters: dict[str, object] | None, field: str) -> str:
+    filters = filters or {}
+    if field == "title":
+        value = str(filters.get("title") or "").strip()
+        return f"Название: {plain_button_text(value)[:24]}" if value else "Название"
+    if field == "min_price":
+        value = filters.get("min_price")
+        return f"Цена от: {fmt_money(float(value))}" if value is not None else "Цена от"
+    if field == "max_price":
+        value = filters.get("max_price")
+        return f"Цена до: {fmt_money(float(value))}" if value is not None else "Цена до"
+    if field == "min_qty":
+        value = filters.get("min_qty")
+        return f"Кол-во от: {int(value)}" if value is not None else "Кол-во от"
+    return "Фильтр"
+
+
+def catalog_filter_menu_kb(scope: str, country_id: int | None, filters: dict[str, object] | None) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text=catalog_filter_field_label(filters, "title"), callback_data=f"catalog_filter_field:{scope}:title")],
+        [
+            InlineKeyboardButton(text=catalog_filter_field_label(filters, "min_price"), callback_data=f"catalog_filter_field:{scope}:min_price"),
+            InlineKeyboardButton(text=catalog_filter_field_label(filters, "max_price"), callback_data=f"catalog_filter_field:{scope}:max_price"),
+        ],
+        [InlineKeyboardButton(text=catalog_filter_field_label(filters, "min_qty"), callback_data=f"catalog_filter_field:{scope}:min_qty")],
+        [InlineKeyboardButton(text="Показать товары", callback_data=f"catalog_filter_apply:{scope}", icon_custom_emoji_id=BTN_ICON_CHECK)],
+    ]
+    if filters:
+        rows.append([InlineKeyboardButton(text="Очистить фильтр", callback_data=f"catalog_filter_clear_menu:{scope}", icon_custom_emoji_id=BTN_ICON_CANCEL)])
+    rows.append([InlineKeyboardButton(text="Назад к товарам", callback_data=catalog_filter_back_callback(country_id), icon_custom_emoji_id=BTN_ICON_BACK)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def catalog_filter_menu_text(filters: dict[str, object] | None) -> str:
+    current_text = format_catalog_filter(filters) or "\n<b>Фильтр:</b> не задан"
+    return (
+        "<b>Фильтр товаров</b>\n\n"
+        "Выберите, что настроить. Бот попросит только одно значение, без сложных команд.\n\n"
+        "<b>Подсказка:</b> чтобы убрать отдельный пункт, отправьте <code>-</code>."
+        f"{current_text}"
+    )
+
+
+def catalog_filter_field_prompt(field: str, filters: dict[str, object] | None) -> str:
+    current = filters or {}
+    if field == "title":
+        value = current.get("title") or "не задано"
+        return (
+            "<b>Название товара</b>\n\n"
+            f"Сейчас: <code>{html.escape(str(value))}</code>\n"
+            "Отправьте слово или часть названия, например <code>USA</code>.\n"
+            "Чтобы убрать фильтр по названию, отправьте <code>-</code>."
+        )
+    if field == "min_price":
+        value = fmt_money(float(current["min_price"])) if current.get("min_price") is not None else "не задано"
+        return (
+            "<b>Минимальная цена</b>\n\n"
+            f"Сейчас: <code>{html.escape(str(value))}</code>\n"
+            "Отправьте число, например <code>1.5</code>.\n"
+            "Чтобы убрать минимальную цену, отправьте <code>-</code>."
+        )
+    if field == "max_price":
+        value = fmt_money(float(current["max_price"])) if current.get("max_price") is not None else "не задано"
+        return (
+            "<b>Максимальная цена</b>\n\n"
+            f"Сейчас: <code>{html.escape(str(value))}</code>\n"
+            "Отправьте число, например <code>5</code>.\n"
+            "Чтобы убрать максимальную цену, отправьте <code>-</code>."
+        )
+    value = current.get("min_qty")
+    value_text = str(int(value)) if value is not None else "не задано"
+    return (
+        "<b>Минимальное количество</b>\n\n"
+        f"Сейчас: <code>{html.escape(value_text)}</code>\n"
+        "Отправьте целое число, например <code>10</code>.\n"
+        "Чтобы убрать фильтр по количеству, отправьте <code>-</code>."
+    )
+
+
+def apply_catalog_filter_field(filters: dict[str, object], field: str, raw_text: str) -> tuple[bool, str]:
+    value = (raw_text or "").strip()
+    if value == "-":
+        filters.pop(field, None)
+        return True, "Пункт фильтра очищен."
+    if field == "title":
+        title = " ".join(value.split())
+        if not title:
+            return False, "Отправьте название или <code>-</code>, чтобы очистить пункт."
+        filters["title"] = title
+        return True, "Название обновлено."
+    if field in {"min_price", "max_price"}:
+        price = parse_float(value)
+        if price is None:
+            return False, "Отправьте цену числом, например <code>1.5</code>."
+        if field == "min_price" and filters.get("max_price") is not None and price > float(filters["max_price"]):
+            return False, "Минимальная цена не может быть выше максимальной."
+        if field == "max_price" and filters.get("min_price") is not None and price < float(filters["min_price"]):
+            return False, "Максимальная цена не может быть ниже минимальной."
+        filters[field] = price
+        return True, "Цена обновлена."
+    if field == "min_qty":
+        try:
+            qty = int(value)
+        except ValueError:
+            return False, "Отправьте количество целым числом, например <code>10</code>."
+        if qty < 0:
+            return False, "Количество не может быть меньше нуля."
+        filters[field] = qty
+        return True, "Количество обновлено."
+    return False, "Неизвестный пункт фильтра."
+
+
 def clamp_page(page: int, total_items: int, page_size: int) -> tuple[int, int]:
     total_pages = max(1, math.ceil(max(total_items, 0) / max(page_size, 1)))
     return min(max(0, page), total_pages - 1), total_pages
@@ -4577,21 +4693,59 @@ async def catalog_all(query: CallbackQuery):
 async def catalog_filter_start(query: CallbackQuery, state: FSMContext):
     await ensure_known_user(query)
     await query.answer()
+    await state.clear()
     country_id, scope = parse_catalog_filter_callback(query.data)
-    await state.set_state(UserCatalogStates.waiting_product_filter)
-    await state.update_data(catalog_filter_country_id=country_id, catalog_filter_scope=scope)
     current = catalog_product_filters.get((query.from_user.id, scope))
-    current_text = format_catalog_filter(current) or "\n<b>Фильтр:</b> не задан"
     await safe_edit(
         query.message,
-        "<b>Фильтр товаров</b>\n\n"
-        "Можно указать название, минимальную/максимальную цену и минимальное количество.\n\n"
-        "Пример:\n"
-        "<code>название: USA\nмин: 2\nмакс: 5\nкол: 10</code>\n\n"
-        "Можно короче: <code>USA мин 2 макс 5 кол 10</code>\n"
-        "Чтобы очистить фильтр, отправьте <code>-</code>."
-        f"{current_text}",
-        cancel_flow_kb("catalog_accounts"),
+        catalog_filter_menu_text(current),
+        catalog_filter_menu_kb(scope, country_id, current),
+    )
+
+
+@dp.callback_query(F.data.startswith("catalog_filter_field:"))
+async def catalog_filter_field_start(query: CallbackQuery, state: FSMContext):
+    await ensure_known_user(query)
+    await query.answer()
+    try:
+        _, scope, field = query.data.split(":", 2)
+    except (AttributeError, ValueError):
+        await query.answer("Фильтр не найден.", show_alert=True)
+        return
+    country_id = int(scope[1:]) if scope.startswith("c") and scope[1:].isdigit() else None
+    if field not in {"title", "min_price", "max_price", "min_qty"}:
+        await query.answer("Пункт фильтра не найден.", show_alert=True)
+        return
+    current = catalog_product_filters.get((query.from_user.id, scope))
+    await state.set_state(UserCatalogStates.waiting_product_filter)
+    await state.update_data(catalog_filter_country_id=country_id, catalog_filter_scope=scope, catalog_filter_field=field)
+    await safe_edit(
+        query.message,
+        catalog_filter_field_prompt(field, current),
+        cancel_flow_kb(f"catalog_filter:{scope}"),
+    )
+
+
+@dp.callback_query(F.data.startswith("catalog_filter_apply:"))
+async def catalog_filter_apply(query: CallbackQuery, state: FSMContext):
+    await ensure_known_user(query)
+    await query.answer()
+    await state.clear()
+    country_id, _scope = parse_catalog_filter_callback(query.data)
+    await _render_product_list(query, country_id=country_id, page=0)
+
+
+@dp.callback_query(F.data.startswith("catalog_filter_clear_menu:"))
+async def catalog_filter_clear_menu(query: CallbackQuery, state: FSMContext):
+    await ensure_known_user(query)
+    await state.clear()
+    country_id, scope = parse_catalog_filter_callback(query.data)
+    catalog_product_filters.pop((query.from_user.id, scope), None)
+    await query.answer("Фильтр очищен.")
+    await safe_edit(
+        query.message,
+        catalog_filter_menu_text(None),
+        catalog_filter_menu_kb(scope, country_id, None),
     )
 
 
@@ -4602,26 +4756,41 @@ async def catalog_filter_finish(message: Message, state: FSMContext):
     country_id = data.get("catalog_filter_country_id")
     country_id = int(country_id) if country_id is not None else None
     scope = data.get("catalog_filter_scope") or catalog_filter_scope(country_id)
+    field = data.get("catalog_filter_field")
     raw_text = (message.text or "").strip()
     key = (message.from_user.id, str(scope))
+    if field:
+        filters = dict(catalog_product_filters.get(key) or {})
+        ok, response = apply_catalog_filter_field(filters, str(field), raw_text)
+        if not ok:
+            await message.answer(response, reply_markup=cancel_flow_kb(f"catalog_filter:{scope}"))
+            return
+        if filters:
+            catalog_product_filters[key] = filters
+        else:
+            catalog_product_filters.pop(key, None)
+        await state.clear()
+        await message.answer(
+            f"{response}\n\n{catalog_filter_menu_text(catalog_product_filters.get(key))}",
+            reply_markup=catalog_filter_menu_kb(str(scope), country_id, catalog_product_filters.get(key)),
+        )
+        return
     if raw_text == "-":
         catalog_product_filters.pop(key, None)
     else:
         filters = parse_catalog_product_filter(raw_text)
         if not filters:
             await message.answer(
-                "Не понял фильтр. Пример: <code>название: USA\nмин: 2\nмакс: 5\nкол: 10</code>",
-                reply_markup=cancel_flow_kb("catalog_accounts"),
+                "Не понял фильтр. Откройте кнопки фильтра и выберите нужный пункт.",
+                reply_markup=cancel_flow_kb(f"catalog_filter:{scope}"),
             )
             return
         catalog_product_filters[key] = filters
     await state.clear()
-    try:
-        text, keyboard = await build_product_list_content(message.from_user.id, country_id=country_id, page=0)
-    except ValueError:
-        await message.answer("Кнопка страны не найдена.", reply_markup=await build_catalog_home_kb())
-        return
-    await message.answer(text, reply_markup=keyboard)
+    await message.answer(
+        catalog_filter_menu_text(catalog_product_filters.get(key)),
+        reply_markup=catalog_filter_menu_kb(str(scope), country_id, catalog_product_filters.get(key)),
+    )
 
 
 @dp.callback_query(F.data.startswith("catalog_filter_clear:"))
@@ -8734,6 +8903,14 @@ async def cancel_flow(query: CallbackQuery, state: FSMContext):
         await safe_edit(query.message, f"{ICON_CATALOG_SECTIONS} <b>Каталог</b>\n\nВыберите раздел:", catalog_sections_keyboard())
     elif back_callback == "catalog_accounts":
         await safe_edit(query.message, f"{ICON_TG_ACCOUNTS} <b>ТГ</b>\n\nВыберите страну:", await build_catalog_home_kb())
+    elif back_callback.startswith("catalog_filter:"):
+        country_id, scope = parse_catalog_filter_callback(back_callback)
+        current = catalog_product_filters.get((query.from_user.id, scope))
+        await safe_edit(
+            query.message,
+            catalog_filter_menu_text(current),
+            catalog_filter_menu_kb(scope, country_id, current),
+        )
     elif back_callback == "user_topup_methods":
         await safe_edit(
             query.message,
