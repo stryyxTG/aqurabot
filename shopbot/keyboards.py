@@ -535,19 +535,23 @@ def admin_catalog_kb(
     *,
     page: int = 0,
     total_pages: int = 1,
+    page_prefix: str = "admin_catalog",
+    back_callback: str = "admin_home",
 ) -> InlineKeyboardMarkup:
     rows = list(country_rows)
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton(text="<", callback_data=f"admin_catalog:{page - 1}"))
+        nav.append(InlineKeyboardButton(text="<", callback_data=f"{page_prefix}:{page - 1}"))
     if total_pages > 1:
         nav.append(InlineKeyboardButton(text=f"{page + 1}/{max(total_pages, 1)}", callback_data="noop"))
     if page + 1 < total_pages:
-        nav.append(InlineKeyboardButton(text=">", callback_data=f"admin_catalog:{page + 1}"))
+        nav.append(InlineKeyboardButton(text=">", callback_data=f"{page_prefix}:{page + 1}"))
     if nav:
         rows.append(nav)
+    rows.append([InlineKeyboardButton(text="Поиск страны", callback_data="admin_catalog_search")])
+    rows.append([InlineKeyboardButton(text="Сортировка", callback_data="admin_catalog_sort")])
     rows.append([InlineKeyboardButton(text="Добавить регион", callback_data="admin_country_add")])
-    rows.append([InlineKeyboardButton(text="Назад", callback_data="admin_home", icon_custom_emoji_id=BTN_ICON_BACK)])
+    rows.append([InlineKeyboardButton(text="Назад", callback_data=back_callback, icon_custom_emoji_id=BTN_ICON_BACK)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

@@ -273,6 +273,8 @@ dp = Dispatcher(storage=MemoryStorage())
 session_manager = ShopSessionManager(settings)
 country_search_cache: dict[int, str] = {}
 catalog_country_sort_modes: dict[int, str] = {}
+admin_catalog_search_cache: dict[int, str] = {}
+admin_catalog_sort_modes: dict[int, str] = {}
 admin_stock_search_cache: dict[int, str] = {}
 admin_stock_sort_modes: dict[int, str] = {}
 
@@ -944,6 +946,16 @@ async def log_purchase(event_type: str, **data) -> None:
             f"📱 <b>Номер:</b> <code>{data.get('phone', 'N/A')}</code>\n"
             f"{buyer_info}\n"
             f"🔑 <b>К0D:</b> <code>{data.get('code', 'N/A')}</code>\n"
+            f"⏰ <b>Время:</b> {datetime.now().strftime('%H:%M:%S')}"
+        ),
+        "code_request_attempt": (
+            f"🔎 <b>ПОПЫТКА ЗАПРОСА К0DА</b>\n\n"
+            f"👤 <b>{data.get('account_name', 'N/A')}</b>\n"
+            f"🛍 <b>Товар:</b> {data.get('product_title', 'N/A')}\n"
+            f"📱 <b>Номер:</b> <code>{data.get('phone', 'N/A')}</code>\n"
+            f"{buyer_info}\n"
+            f"ℹ️ <b>Результат:</b> новых к0Dов пока нет\n"
+            f"📝 <b>Причина:</b> {data.get('error', 'Unknown result')}\n"
             f"⏰ <b>Время:</b> {datetime.now().strftime('%H:%M:%S')}"
         ),
         "purchase_successful": (
@@ -2159,6 +2171,34 @@ def admin_stock_sort_menu_text(sort_mode: str | None) -> str:
     )
 
 
+def admin_catalog_sort_menu_kb(sort_mode: str | None) -> InlineKeyboardMarkup:
+    sort_mode = str(sort_mode or "")
+    cheap_text = "Сначала дешевые" + (" ✓" if sort_mode == "price_asc" else "")
+    expensive_text = "Сначала дорогие" + (" ✓" if sort_mode == "price_desc" else "")
+    alpha_text = "По алфавиту" + (" ✓" if sort_mode == "country_asc" else "")
+    rows = [
+        [
+            InlineKeyboardButton(text=cheap_text, callback_data="admin_catalog_sort_set:price_asc"),
+            InlineKeyboardButton(text=expensive_text, callback_data="admin_catalog_sort_set:price_desc"),
+        ],
+        [InlineKeyboardButton(text=alpha_text, callback_data="admin_catalog_sort_set:country_asc")],
+        [InlineKeyboardButton(text="Показать страны", callback_data="admin_catalog", icon_custom_emoji_id=BTN_ICON_CHECK)],
+    ]
+    if sort_mode:
+        rows.append([InlineKeyboardButton(text="Сбросить сортировку", callback_data="admin_catalog_sort_clear", icon_custom_emoji_id=BTN_ICON_CANCEL)])
+    rows.append([InlineKeyboardButton(text="Назад к странам", callback_data="admin_catalog", icon_custom_emoji_id=BTN_ICON_BACK)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_catalog_sort_menu_text(sort_mode: str | None) -> str:
+    current_text = format_catalog_country_sort(sort_mode) or "\n<b>Сортировка:</b> не задана"
+    return (
+        "<b>Сортировка стран каталога</b>\n\n"
+        "Выберите порядок показа стран."
+        f"{current_text}"
+    )
+
+
 def clamp_page(page: int, total_items: int, page_size: int) -> tuple[int, int]:
     total_pages = max(1, math.ceil(max(total_items, 0) / max(page_size, 1)))
     return min(max(0, page), total_pages - 1), total_pages
@@ -2189,9 +2229,20 @@ async def build_country_rows(
     return rows[start:start + COUNTRY_PAGE_SIZE], page, total_pages, total
 
 
-async def build_admin_country_rows(*, page: int = 0) -> tuple[list[list[InlineKeyboardButton]], int, int, int]:
+async def build_admin_country_rows(
+    *,
+    page: int = 0,
+    search_query: str | None = None,
+    sort_mode: str | None = None,
+) -> tuple[list[list[InlineKeyboardButton]], int, int, int]:
     rows: list[list[InlineKeyboardButton]] = []
-    counts = await list_country_counts()
+    query = normalize_country_search(search_query)
+    counts = []
+    for row in await list_country_counts():
+        if query and query not in normalize_country_search(row["country"]):
+            continue
+        counts.append(row)
+    counts = sort_country_count_rows(counts, sort_mode)
     for row in counts:
         rows.append([
             InlineKeyboardButton(
@@ -2218,9 +2269,27 @@ async def build_catalog_home_kb(
     return catalog_home_kb(rows, page=page, total_pages=total_pages, page_prefix=page_prefix)
 
 
-async def build_admin_catalog_keyboard(*, page: int = 0) -> InlineKeyboardMarkup:
-    rows, page, total_pages, _total = await build_admin_country_rows(page=page)
-    return admin_catalog_kb(rows, page=page, total_pages=total_pages)
+async def build_admin_catalog_keyboard(
+    *,
+    user_id: int | None = None,
+    page: int = 0,
+    search_query: str | None = None,
+    page_prefix: str = "admin_catalog",
+    back_callback: str = "admin_home",
+) -> InlineKeyboardMarkup:
+    sort_mode = admin_catalog_sort_modes.get(int(user_id)) if user_id is not None else None
+    rows, page, total_pages, _total = await build_admin_country_rows(
+        page=page,
+        search_query=search_query,
+        sort_mode=sort_mode,
+    )
+    return admin_catalog_kb(
+        rows,
+        page=page,
+        total_pages=total_pages,
+        page_prefix=page_prefix,
+        back_callback=back_callback,
+    )
 
 
 async def build_admin_stock_country_rows(
@@ -4930,8 +4999,7 @@ async def request_code(query: CallbackQuery):
             product_id,
             batch_id or "-",
         )
-        # Логируем ошибку
-        await log_purchase("purchase_error",
+        await log_purchase("code_request_attempt",
             product_title=product["title"],
             phone=product["phone"],
             account_name=product["first_name"] or product["username"],
@@ -6324,7 +6392,120 @@ async def admin_catalog(query: CallbackQuery):
         "Эти страны показываются в каталоге отдельными кнопками. "
         "При добавлении новый товар можно положить в одну из них."
     )
-    await safe_edit(query.message, text, await build_admin_catalog_keyboard(page=page))
+    text += format_catalog_country_sort(admin_catalog_sort_modes.get(query.from_user.id))
+    await safe_edit(query.message, text, await build_admin_catalog_keyboard(user_id=query.from_user.id, page=page))
+
+
+@dp.callback_query(F.data == "admin_catalog_search")
+async def admin_catalog_search_start(query: CallbackQuery, state: FSMContext):
+    await ensure_known_user(query)
+    await query.answer()
+    if not is_admin(query.from_user.id):
+        return
+    await state.set_state(AdminCatalogStates.waiting_country_query)
+    await safe_edit(
+        query.message,
+        "<b>Поиск страны</b>\n\nОтправьте название страны или часть названия.",
+        cancel_flow_kb("admin_catalog"),
+    )
+
+
+@dp.message(AdminCatalogStates.waiting_country_query)
+async def admin_catalog_search_finish(message: Message, state: FSMContext):
+    await ensure_known_user(message)
+    if not is_admin(message.from_user.id):
+        return
+    query_text = (message.text or "").strip()
+    if not query_text:
+        await message.answer("Введите название страны или часть названия.", reply_markup=cancel_flow_kb("admin_catalog"))
+        return
+    admin_catalog_search_cache[message.from_user.id] = query_text
+    keyboard = await build_admin_catalog_keyboard(
+        user_id=message.from_user.id,
+        page=0,
+        search_query=query_text,
+        page_prefix="admin_catalog_search_page",
+        back_callback="admin_catalog",
+    )
+    await state.clear()
+    text = (
+        "<b>Результаты поиска стран</b>\n\n"
+        f"Запрос: <code>{html.escape(query_text)}</code>"
+        f"{format_catalog_country_sort(admin_catalog_sort_modes.get(message.from_user.id))}"
+    )
+    await message.answer(text, reply_markup=keyboard)
+
+
+@dp.callback_query(F.data.startswith("admin_catalog_search_page:"))
+async def admin_catalog_search_page(query: CallbackQuery):
+    await ensure_known_user(query)
+    await query.answer()
+    if not is_admin(query.from_user.id):
+        return
+    query_text = admin_catalog_search_cache.get(query.from_user.id, "")
+    if not query_text:
+        await query.answer("Поиск устарел. Введите запрос заново.", show_alert=True)
+        return
+    try:
+        page = max(0, int((query.data or "").rsplit(":", 1)[1]))
+    except ValueError:
+        page = 0
+    keyboard = await build_admin_catalog_keyboard(
+        user_id=query.from_user.id,
+        page=page,
+        search_query=query_text,
+        page_prefix="admin_catalog_search_page",
+        back_callback="admin_catalog",
+    )
+    text = (
+        "<b>Результаты поиска стран</b>\n\n"
+        f"Запрос: <code>{html.escape(query_text)}</code>"
+        f"{format_catalog_country_sort(admin_catalog_sort_modes.get(query.from_user.id))}"
+    )
+    await safe_edit(query.message, text, keyboard)
+
+
+@dp.callback_query(F.data == "admin_catalog_sort")
+async def admin_catalog_sort_menu(query: CallbackQuery, state: FSMContext):
+    await ensure_known_user(query)
+    await query.answer()
+    if not is_admin(query.from_user.id):
+        return
+    await state.clear()
+    sort_mode = admin_catalog_sort_modes.get(query.from_user.id)
+    await safe_edit(query.message, admin_catalog_sort_menu_text(sort_mode), admin_catalog_sort_menu_kb(sort_mode))
+
+
+@dp.callback_query(F.data.startswith("admin_catalog_sort_set:"))
+async def admin_catalog_sort_set(query: CallbackQuery, state: FSMContext):
+    await ensure_known_user(query)
+    await query.answer()
+    if not is_admin(query.from_user.id):
+        return
+    await state.clear()
+    sort_mode = (query.data or "").split(":", 1)[1]
+    if sort_mode not in {"price_asc", "price_desc", "country_asc"}:
+        await query.answer("Сортировка не найдена.", show_alert=True)
+        return
+    admin_catalog_sort_modes[query.from_user.id] = sort_mode
+    text = (
+        "<b>Страны каталога</b>\n\n"
+        "Эти страны показываются в каталоге отдельными кнопками. "
+        "При добавлении новый товар можно положить в одну из них."
+        f"{format_catalog_country_sort(sort_mode)}"
+    )
+    await safe_edit(query.message, text, await build_admin_catalog_keyboard(user_id=query.from_user.id))
+
+
+@dp.callback_query(F.data == "admin_catalog_sort_clear")
+async def admin_catalog_sort_clear(query: CallbackQuery, state: FSMContext):
+    await ensure_known_user(query)
+    await query.answer()
+    if not is_admin(query.from_user.id):
+        return
+    await state.clear()
+    admin_catalog_sort_modes.pop(query.from_user.id, None)
+    await safe_edit(query.message, admin_catalog_sort_menu_text(None), admin_catalog_sort_menu_kb(None))
 
 
 async def render_admin_country(message: Message, country_id: int) -> None:
@@ -8872,12 +9053,24 @@ async def cancel_flow(query: CallbackQuery, state: FSMContext):
     if back_callback == "admin_home":
         await safe_edit(query.message, "<b>Админка</b>", admin_home_kb())
     elif back_callback == "admin_catalog":
-        await safe_edit(query.message, "<b>Страны каталога</b>", await build_admin_catalog_keyboard())
+        text = (
+            "<b>Страны каталога</b>\n\n"
+            "Эти страны показываются в каталоге отдельными кнопками. "
+            "При добавлении новый товар можно положить в одну из них."
+            f"{format_catalog_country_sort(admin_catalog_sort_modes.get(query.from_user.id))}"
+        )
+        await safe_edit(query.message, text, await build_admin_catalog_keyboard(user_id=query.from_user.id))
     elif back_callback.startswith("admin_country:"):
         try:
             country_id = int(back_callback.rsplit(":", 1)[1])
         except ValueError:
-            await safe_edit(query.message, "<b>Страны каталога</b>", await build_admin_catalog_keyboard())
+            text = (
+                "<b>Страны каталога</b>\n\n"
+                "Эти страны показываются в каталоге отдельными кнопками. "
+                "При добавлении новый товар можно положить в одну из них."
+                f"{format_catalog_country_sort(admin_catalog_sort_modes.get(query.from_user.id))}"
+            )
+            await safe_edit(query.message, text, await build_admin_catalog_keyboard(user_id=query.from_user.id))
         else:
             await render_admin_country(query.message, country_id)
     elif back_callback == "admin_proxy":

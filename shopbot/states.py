@@ -32,6 +32,7 @@ class AdminCardsStates(StatesGroup):
 
 
 class AdminCatalogStates(StatesGroup):
+    waiting_country_query = State()
     waiting_country_name = State()
     waiting_country_rename = State()
     waiting_country_rename_icon = State()
