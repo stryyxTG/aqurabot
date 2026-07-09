@@ -272,7 +272,7 @@ bot = Bot(settings.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.
 dp = Dispatcher(storage=MemoryStorage())
 session_manager = ShopSessionManager(settings)
 country_search_cache: dict[int, str] = {}
-catalog_product_filters: dict[tuple[int, str], dict[str, object]] = {}
+catalog_country_sort_modes: dict[int, str] = {}
 
 
 def topup_methods_keyboard() -> InlineKeyboardMarkup:
@@ -2071,66 +2071,60 @@ def normalize_country_search(value: object) -> str:
     return " ".join(str(value or "").casefold().split())
 
 
-def catalog_filter_scope(country_id: int | None) -> str:
-    return "all" if country_id is None else f"c{country_id}"
+def sort_country_count_rows(rows: list, sort_mode: str | None) -> list:
+    result = list(rows)
+    mode = str(sort_mode or "")
+    def min_price_value(row) -> float | None:
+        price = parse_float(str(row["min_price"])) if row["min_price"] is not None else None
+        return price
 
-
-def parse_catalog_filter_callback(data: str | None) -> tuple[int | None, str]:
-    raw_scope = (data or "").split(":", 1)[1] if ":" in (data or "") else "all"
-    if raw_scope.startswith("c") and raw_scope[1:].isdigit():
-        return int(raw_scope[1:]), raw_scope
-    return None, "all"
-
-
-def apply_catalog_product_filters(items: list[dict], filters: dict[str, object] | None) -> list[dict]:
-    if not filters:
-        return items
-    sort_mode = str(filters.get("sort") or "")
-    result = list(items)
-    if sort_mode == "price_asc":
-        result.sort(key=lambda item: (float(item.get("price") or 0), normalize_country_search(item.get("title"))))
-    elif sort_mode == "price_desc":
-        result.sort(key=lambda item: (-float(item.get("price") or 0), normalize_country_search(item.get("title"))))
+    if mode == "price_asc":
+        result.sort(key=lambda row: (min_price_value(row) is None, min_price_value(row) or 0, normalize_country_search(row["country"])))
+    elif mode == "price_desc":
+        result.sort(key=lambda row: (min_price_value(row) is None, -(min_price_value(row) or 0), normalize_country_search(row["country"])))
+    elif mode == "country_asc":
+        result.sort(key=lambda row: normalize_country_search(row["country"]))
     return result
 
 
-def format_catalog_filter(filters: dict[str, object] | None) -> str:
-    if not filters:
-        return ""
-    parts = []
-    if filters.get("sort") == "price_asc":
-        parts.append("сначала дешевые")
-    if filters.get("sort") == "price_desc":
-        parts.append("сначала дорогие")
-    return "\n<b>Выбрано:</b> " + ", ".join(parts) if parts else ""
+def format_catalog_country_sort(sort_mode: str | None) -> str:
+    if sort_mode == "price_asc":
+        return "\n<b>Сортировка:</b> сначала дешевые страны"
+    if sort_mode == "price_desc":
+        return "\n<b>Сортировка:</b> сначала дорогие страны"
+    if sort_mode == "country_asc":
+        return "\n<b>Сортировка:</b> страны по алфавиту"
+    return ""
 
 
-def catalog_filter_back_callback(country_id: int | None) -> str:
-    return "catalog_all_0" if country_id is None else f"catalog_country:{country_id}:0"
+def catalog_filter_back_callback(_country_id: int | None = None) -> str:
+    return "catalog_accounts"
 
 
-def catalog_filter_menu_kb(scope: str, country_id: int | None, filters: dict[str, object] | None) -> InlineKeyboardMarkup:
-    sort_mode = str((filters or {}).get("sort") or "")
+def catalog_filter_menu_kb(sort_mode: str | None) -> InlineKeyboardMarkup:
+    sort_mode = str(sort_mode or "")
     cheap_text = "Сначала дешевые" + (" ✓" if sort_mode == "price_asc" else "")
     expensive_text = "Сначала дорогие" + (" ✓" if sort_mode == "price_desc" else "")
+    alpha_text = "По алфавиту" + (" ✓" if sort_mode == "country_asc" else "")
     rows = [
         [
-            InlineKeyboardButton(text=cheap_text, callback_data=f"catalog_filter_sort:{scope}:price_asc"),
-            InlineKeyboardButton(text=expensive_text, callback_data=f"catalog_filter_sort:{scope}:price_desc"),
+            InlineKeyboardButton(text=cheap_text, callback_data="catalog_filter_sort:price_asc"),
+            InlineKeyboardButton(text=expensive_text, callback_data="catalog_filter_sort:price_desc"),
         ],
-        [InlineKeyboardButton(text="Показать товары", callback_data=f"catalog_filter_apply:{scope}", icon_custom_emoji_id=BTN_ICON_CHECK)],
+        [InlineKeyboardButton(text=alpha_text, callback_data="catalog_filter_sort:country_asc")],
+        [InlineKeyboardButton(text="Показать страны", callback_data="catalog_filter_apply", icon_custom_emoji_id=BTN_ICON_CHECK)],
     ]
-    if filters:
-        rows.append([InlineKeyboardButton(text="Сбросить сортировку", callback_data=f"catalog_filter_clear_menu:{scope}", icon_custom_emoji_id=BTN_ICON_CANCEL)])
-    rows.append([InlineKeyboardButton(text="Назад к товарам", callback_data=catalog_filter_back_callback(country_id), icon_custom_emoji_id=BTN_ICON_BACK)])
+    if sort_mode:
+        rows.append([InlineKeyboardButton(text="Сбросить сортировку", callback_data="catalog_filter_clear_menu", icon_custom_emoji_id=BTN_ICON_CANCEL)])
+    rows.append([InlineKeyboardButton(text="Назад к странам", callback_data=catalog_filter_back_callback(), icon_custom_emoji_id=BTN_ICON_BACK)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def catalog_filter_menu_text(filters: dict[str, object] | None) -> str:
-    current_text = format_catalog_filter(filters) or "\n<b>Выбрано:</b> не задано"
+def catalog_filter_menu_text(sort_mode: str | None) -> str:
+    current_text = format_catalog_country_sort(sort_mode) or "\n<b>Сортировка:</b> не задана"
     return (
-        "<b>Сортировка товаров</b>\n\n"
-        "Выберите порядок показа товаров. Ничего вводить вручную не нужно."
+        "<b>Сортировка стран</b>\n\n"
+        "Выберите, как показать страны в каталоге."
         f"{current_text}"
     )
 
@@ -2140,9 +2134,14 @@ def clamp_page(page: int, total_items: int, page_size: int) -> tuple[int, int]:
     return min(max(0, page), total_pages - 1), total_pages
 
 
-async def build_country_rows(search_query: str | None = None, *, page: int = 0) -> tuple[list[list[InlineKeyboardButton]], int, int, int]:
+async def build_country_rows(
+    search_query: str | None = None,
+    *,
+    page: int = 0,
+    sort_mode: str | None = None,
+) -> tuple[list[list[InlineKeyboardButton]], int, int, int]:
     rows: list[list[InlineKeyboardButton]] = []
-    counts = await list_country_counts()
+    counts = sort_country_count_rows(await list_country_counts(), sort_mode)
     query = normalize_country_search(search_query)
     for row in counts:
         if query and query not in normalize_country_search(row["country"]):
@@ -2177,8 +2176,15 @@ async def build_admin_country_rows(*, page: int = 0) -> tuple[list[list[InlineKe
     return rows[start:start + COUNTRY_PAGE_SIZE], page, total_pages, total
 
 
-async def build_catalog_home_kb(*, page: int = 0, search_query: str | None = None, page_prefix: str = "catalog_accounts") -> InlineKeyboardMarkup:
-    rows, page, total_pages, _total = await build_country_rows(search_query, page=page)
+async def build_catalog_home_kb(
+    *,
+    user_id: int | None = None,
+    page: int = 0,
+    search_query: str | None = None,
+    page_prefix: str = "catalog_accounts",
+) -> InlineKeyboardMarkup:
+    sort_mode = catalog_country_sort_modes.get(int(user_id)) if user_id is not None else None
+    rows, page, total_pages, _total = await build_country_rows(search_query, page=page, sort_mode=sort_mode)
     return catalog_home_kb(rows, page=page, total_pages=total_pages, page_prefix=page_prefix)
 
 
@@ -2885,7 +2891,8 @@ async def catalog_accounts(query: CallbackQuery):
         except ValueError:
             page = 0
     text = f"{ICON_TG_ACCOUNTS} <b>ТГ</b>\n\nВыберите страну:"
-    await replace_with_text_menu(query, text, await build_catalog_home_kb(page=page))
+    text += format_catalog_country_sort(catalog_country_sort_modes.get(query.from_user.id))
+    await replace_with_text_menu(query, text, await build_catalog_home_kb(user_id=query.from_user.id, page=page))
 
 
 @dp.callback_query(F.data == "catalog_country_search")
@@ -2908,7 +2915,11 @@ async def catalog_country_search_finish(message: Message, state: FSMContext):
         await message.answer("Введите название страны или часть названия.", reply_markup=cancel_flow_kb("catalog_accounts"))
         return
 
-    rows, page, total_pages, total = await build_country_rows(query_text, page=0)
+    rows, page, total_pages, total = await build_country_rows(
+        query_text,
+        page=0,
+        sort_mode=catalog_country_sort_modes.get(message.from_user.id),
+    )
     await state.clear()
     if not total:
         await message.answer(
@@ -2922,7 +2933,8 @@ async def catalog_country_search_finish(message: Message, state: FSMContext):
     await message.answer(
         f"{ICON_TG_ACCOUNTS} <b>Результаты поиска</b>\n\n"
         f"Запрос: <code>{html.escape(query_text)}</code>\n"
-        f"Найдено: <b>{total}</b>",
+        f"Найдено: <b>{total}</b>"
+        f"{format_catalog_country_sort(catalog_country_sort_modes.get(message.from_user.id))}",
         reply_markup=catalog_home_kb(rows, page=page, total_pages=total_pages, page_prefix="catalog_country_search_page"),
     )
 
@@ -2938,13 +2950,18 @@ async def catalog_country_search_page(query: CallbackQuery):
         page = max(0, int((query.data or "").rsplit(":", 1)[1]))
     except ValueError:
         page = 0
-    rows, page, total_pages, total = await build_country_rows(query_text, page=page)
+    rows, page, total_pages, total = await build_country_rows(
+        query_text,
+        page=page,
+        sort_mode=catalog_country_sort_modes.get(query.from_user.id),
+    )
     await query.answer()
     await safe_edit(
         query.message,
         f"{ICON_TG_ACCOUNTS} <b>Результаты поиска</b>\n\n"
         f"Запрос: <code>{html.escape(query_text)}</code>\n"
-        f"Найдено: <b>{total}</b>",
+        f"Найдено: <b>{total}</b>"
+        f"{format_catalog_country_sort(catalog_country_sort_modes.get(query.from_user.id))}",
         catalog_home_kb(rows, page=page, total_pages=total_pages, page_prefix="catalog_country_search_page"),
     )
 
@@ -4471,8 +4488,7 @@ async def my_purchase_detail(query: CallbackQuery):
 async def build_product_list_content(user_id: int, *, country_id: int | None, page: int) -> tuple[str, InlineKeyboardMarkup]:
     country = None
     active_country_names: set[str] | None = None
-    scope = catalog_filter_scope(country_id)
-    filters = catalog_product_filters.get((user_id, scope))
+    _ = user_id
     if country_id is not None:
         country_row = await get_catalog_country(country_id)
         if not country_row:
@@ -4484,7 +4500,6 @@ async def build_product_list_content(user_id: int, *, country_id: int | None, pa
         all_items = await list_product_departments(country=country, limit=100000, offset=0)
     else:
         all_items = [item for item in await list_product_departments(limit=1000) if item["country"] in active_country_names]
-    all_items = apply_catalog_product_filters(all_items, filters)
     total = len(all_items)
     page, total_pages = clamp_page(page, total, PAGE_SIZE)
     offset = page * PAGE_SIZE
@@ -4500,24 +4515,19 @@ async def build_product_list_content(user_id: int, *, country_id: int | None, pa
                 callback_data=f"product_group:{item['sample_product_id']}:{'all' if country_id is None else f'c{country_id}'}:{page}",
             )
         ])
-    filter_text = format_catalog_filter(filters)
     if country:
         text = (
             f"{ICON_COUNTRY} <b>Страна:</b> {html.escape(country)}\n\n"
             f"{ICON_TAG} <b>Товаров:</b> {total_accounts}\n"
             f"<b>Типов найдено:</b> {total}"
-            f"{filter_text}"
         )
     else:
         text = (
             f"<b>Все товары</b>\n\n"
             f"{ICON_TAG} <b>Товаров:</b> {total_accounts}\n"
             f"<b>Типов найдено:</b> {total}"
-            f"{filter_text}"
         )
     prefix = "catalog_all" if country_id is None else f"catalog_country:{country_id}:"
-    filter_callback = f"catalog_filter:{scope}"
-    clear_filter_callback = f"catalog_filter_clear:{scope}" if filters else None
     return (
         text,
         product_list_kb(
@@ -4526,8 +4536,6 @@ async def build_product_list_content(user_id: int, *, country_id: int | None, pa
             page=page,
             total_pages=total_pages,
             back_callback="catalog_accounts",
-            filter_callback=filter_callback,
-            clear_filter_callback=clear_filter_callback,
         ),
     )
 
@@ -4561,12 +4569,11 @@ async def catalog_filter_start(query: CallbackQuery, state: FSMContext):
     await ensure_known_user(query)
     await query.answer()
     await state.clear()
-    country_id, scope = parse_catalog_filter_callback(query.data)
-    current = catalog_product_filters.get((query.from_user.id, scope))
+    current = catalog_country_sort_modes.get(query.from_user.id)
     await safe_edit(
         query.message,
         catalog_filter_menu_text(current),
-        catalog_filter_menu_kb(scope, country_id, current),
+        catalog_filter_menu_kb(current),
     )
 
 
@@ -4576,51 +4583,42 @@ async def catalog_filter_sort(query: CallbackQuery, state: FSMContext):
     await query.answer()
     await state.clear()
     try:
-        _, scope, sort_mode = query.data.split(":", 2)
+        _, sort_mode = query.data.split(":", 1)
     except (AttributeError, ValueError):
         await query.answer("Сортировка не найдена.", show_alert=True)
         return
-    if sort_mode not in {"price_asc", "price_desc"}:
+    if sort_mode not in {"price_asc", "price_desc", "country_asc"}:
         await query.answer("Сортировка не найдена.", show_alert=True)
         return
-    country_id = int(scope[1:]) if scope.startswith("c") and scope[1:].isdigit() else None
-    key = (query.from_user.id, scope)
-    filters = dict(catalog_product_filters.get(key) or {})
-    filters["sort"] = sort_mode
-    catalog_product_filters[key] = filters
-    await _render_product_list(query, country_id=country_id, page=0)
+    catalog_country_sort_modes[query.from_user.id] = sort_mode
+    await safe_edit(
+        query.message,
+        f"{ICON_TG_ACCOUNTS} <b>ТГ</b>\n\nВыберите страну:"
+        f"{format_catalog_country_sort(sort_mode)}",
+        await build_catalog_home_kb(user_id=query.from_user.id),
+    )
 
 
-@dp.callback_query(F.data.startswith("catalog_filter_apply:"))
+@dp.callback_query(F.data == "catalog_filter_apply")
 async def catalog_filter_apply(query: CallbackQuery, state: FSMContext):
     await ensure_known_user(query)
     await query.answer()
     await state.clear()
-    country_id, _scope = parse_catalog_filter_callback(query.data)
-    await _render_product_list(query, country_id=country_id, page=0)
-
-
-@dp.callback_query(F.data.startswith("catalog_filter_clear_menu:"))
-async def catalog_filter_clear_menu(query: CallbackQuery, state: FSMContext):
-    await ensure_known_user(query)
-    await state.clear()
-    country_id, scope = parse_catalog_filter_callback(query.data)
-    catalog_product_filters.pop((query.from_user.id, scope), None)
-    await query.answer("Сортировка сброшена.")
     await safe_edit(
         query.message,
-        catalog_filter_menu_text(None),
-        catalog_filter_menu_kb(scope, country_id, None),
+        f"{ICON_TG_ACCOUNTS} <b>ТГ</b>\n\nВыберите страну:"
+        f"{format_catalog_country_sort(catalog_country_sort_modes.get(query.from_user.id))}",
+        await build_catalog_home_kb(user_id=query.from_user.id),
     )
 
 
-@dp.callback_query(F.data.startswith("catalog_filter_clear:"))
-async def catalog_filter_clear(query: CallbackQuery):
+@dp.callback_query(F.data == "catalog_filter_clear_menu")
+async def catalog_filter_clear_menu(query: CallbackQuery, state: FSMContext):
     await ensure_known_user(query)
-    country_id, scope = parse_catalog_filter_callback(query.data)
-    catalog_product_filters.pop((query.from_user.id, scope), None)
+    await state.clear()
+    catalog_country_sort_modes.pop(query.from_user.id, None)
     await query.answer("Сортировка сброшена.")
-    await _render_product_list(query, country_id=country_id, page=0)
+    await safe_edit(query.message, catalog_filter_menu_text(None), catalog_filter_menu_kb(None))
 
 
 @dp.callback_query(F.data.startswith("product_group:"))
@@ -8723,14 +8721,18 @@ async def cancel_flow(query: CallbackQuery, state: FSMContext):
     elif back_callback == "menu_catalog":
         await safe_edit(query.message, f"{ICON_CATALOG_SECTIONS} <b>Каталог</b>\n\nВыберите раздел:", catalog_sections_keyboard())
     elif back_callback == "catalog_accounts":
-        await safe_edit(query.message, f"{ICON_TG_ACCOUNTS} <b>ТГ</b>\n\nВыберите страну:", await build_catalog_home_kb())
+        await safe_edit(
+            query.message,
+            f"{ICON_TG_ACCOUNTS} <b>ТГ</b>\n\nВыберите страну:"
+            f"{format_catalog_country_sort(catalog_country_sort_modes.get(query.from_user.id))}",
+            await build_catalog_home_kb(user_id=query.from_user.id),
+        )
     elif back_callback.startswith("catalog_filter:"):
-        country_id, scope = parse_catalog_filter_callback(back_callback)
-        current = catalog_product_filters.get((query.from_user.id, scope))
+        current = catalog_country_sort_modes.get(query.from_user.id)
         await safe_edit(
             query.message,
             catalog_filter_menu_text(current),
-            catalog_filter_menu_kb(scope, country_id, current),
+            catalog_filter_menu_kb(current),
         )
     elif back_callback == "user_topup_methods":
         await safe_edit(
