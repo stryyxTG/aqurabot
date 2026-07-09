@@ -1679,6 +1679,7 @@ def product_group_public_text(group, *, in_cart_count: int | None = None, availa
 def product_admin_text(product) -> str:
     sold_to = product['sold_to'] or '—'
     sold_at = fmt_local_datetime(product['sold_at'])
+    created_at = fmt_local_datetime(product['created_at'])
     account_name = html.escape(product['first_name'] or product['username'] or '—')
     return (
         "<b>Карточка товара</b>\n\n"
@@ -1692,6 +1693,7 @@ def product_admin_text(product) -> str:
         f"<b>К0D/заметка:</b> {render_rich_text(product['extra_code'] or 'нет')}\n"
         f"<b>Описание:</b> {render_rich_text(product['description'] or '—')}\n"
         f"<b>Статус:</b> {html.escape(product['status'])}\n"
+        f"<b>Залит:</b> {html.escape(str(created_at))}\n"
         f"<b>Покупатель:</b> <code>{sold_to}</code>\n"
         f"<b>Продан:</b> {html.escape(str(sold_at))}\n"
         f"<b>ID товара:</b> <code>{product['product_id']}</code>"
@@ -5732,6 +5734,7 @@ async def admin_purchase_detail_view(query: CallbackQuery):
         f"{ICON_COUNTRY} <b>Страна:</b> {html.escape(product['country'])}\n"
         f"<b>Цена:</b> {fmt_money(float(product['price']))}\n"
         f"<b>Статус:</b> {html.escape(product['status'])}\n\n"
+        f"<b>Залит:</b> {fmt_local_datetime(product['created_at'])}\n\n"
         
         f"<b>Данные товара:</b>\n"
         f"<b>Телефон:</b> <code>{html.escape(product['phone'] or '—')}</code>\n"
@@ -7413,6 +7416,7 @@ async def admin_stuck_detail(query: CallbackQuery):
         f"<b>ID:</b> <code>{product_id}</code>\n"
         f"<b>Название:</b> {render_rich_text(product['title'])}\n"
         f"<b>Статус:</b> {html.escape(product['status'])}\n"
+        f"<b>Залит:</b> {fmt_local_datetime(product['created_at'])}\n"
         f"<b>Покупатель:</b> <code>{product['sold_to'] or '—'}</code>\n"
         f"<b>Сумма:</b> {fmt_money(float(product['sold_price'] or product['price'] or 0))}\n\n"
         "Выберите действие:"
