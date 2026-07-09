@@ -2096,6 +2096,10 @@ def sort_country_count_rows(rows: list, sort_mode: str | None) -> list:
         result.sort(key=lambda row: (min_price_value(row) is None, min_price_value(row) or 0, normalize_country_search(row["country"])))
     elif mode == "price_desc":
         result.sort(key=lambda row: (min_price_value(row) is None, -(min_price_value(row) or 0), normalize_country_search(row["country"])))
+    elif mode == "qty_asc":
+        result.sort(key=lambda row: (int(row["total"] or 0), normalize_country_search(row["country"])))
+    elif mode == "qty_desc":
+        result.sort(key=lambda row: (-int(row["total"] or 0), normalize_country_search(row["country"])))
     elif mode == "country_asc":
         result.sort(key=lambda row: normalize_country_search(row["country"]))
     return result
@@ -2106,6 +2110,10 @@ def format_catalog_country_sort(sort_mode: str | None) -> str:
         return "\n<b>Сортировка:</b> сначала дешевые страны"
     if sort_mode == "price_desc":
         return "\n<b>Сортировка:</b> сначала дорогие страны"
+    if sort_mode == "qty_asc":
+        return "\n<b>Сортировка:</b> сначала меньше товаров"
+    if sort_mode == "qty_desc":
+        return "\n<b>Сортировка:</b> сначала больше товаров"
     if sort_mode == "country_asc":
         return "\n<b>Сортировка:</b> страны по алфавиту"
     return ""
@@ -2119,11 +2127,17 @@ def catalog_filter_menu_kb(sort_mode: str | None) -> InlineKeyboardMarkup:
     sort_mode = str(sort_mode or "")
     cheap_text = "Сначала дешевые" + (" ✓" if sort_mode == "price_asc" else "")
     expensive_text = "Сначала дорогие" + (" ✓" if sort_mode == "price_desc" else "")
+    qty_low_text = "Меньше товаров" + (" ✓" if sort_mode == "qty_asc" else "")
+    qty_high_text = "Больше товаров" + (" ✓" if sort_mode == "qty_desc" else "")
     alpha_text = "По алфавиту" + (" ✓" if sort_mode == "country_asc" else "")
     rows = [
         [
             InlineKeyboardButton(text=cheap_text, callback_data="catalog_filter_sort:price_asc"),
             InlineKeyboardButton(text=expensive_text, callback_data="catalog_filter_sort:price_desc"),
+        ],
+        [
+            InlineKeyboardButton(text=qty_low_text, callback_data="catalog_filter_sort:qty_asc"),
+            InlineKeyboardButton(text=qty_high_text, callback_data="catalog_filter_sort:qty_desc"),
         ],
         [InlineKeyboardButton(text=alpha_text, callback_data="catalog_filter_sort:country_asc")],
         [InlineKeyboardButton(text="Показать страны", callback_data="catalog_filter_apply", icon_custom_emoji_id=BTN_ICON_CHECK)],
@@ -2147,11 +2161,17 @@ def admin_stock_sort_menu_kb(sort_mode: str | None) -> InlineKeyboardMarkup:
     sort_mode = str(sort_mode or "")
     cheap_text = "Сначала дешевые" + (" ✓" if sort_mode == "price_asc" else "")
     expensive_text = "Сначала дорогие" + (" ✓" if sort_mode == "price_desc" else "")
+    qty_low_text = "Меньше товаров" + (" ✓" if sort_mode == "qty_asc" else "")
+    qty_high_text = "Больше товаров" + (" ✓" if sort_mode == "qty_desc" else "")
     alpha_text = "По алфавиту" + (" ✓" if sort_mode == "country_asc" else "")
     rows = [
         [
             InlineKeyboardButton(text=cheap_text, callback_data="admin_stock_sort_set:price_asc"),
             InlineKeyboardButton(text=expensive_text, callback_data="admin_stock_sort_set:price_desc"),
+        ],
+        [
+            InlineKeyboardButton(text=qty_low_text, callback_data="admin_stock_sort_set:qty_asc"),
+            InlineKeyboardButton(text=qty_high_text, callback_data="admin_stock_sort_set:qty_desc"),
         ],
         [InlineKeyboardButton(text=alpha_text, callback_data="admin_stock_sort_set:country_asc")],
         [InlineKeyboardButton(text="Показать страны", callback_data="admin_stock_catalog", icon_custom_emoji_id=BTN_ICON_CHECK)],
@@ -2175,11 +2195,17 @@ def admin_catalog_sort_menu_kb(sort_mode: str | None) -> InlineKeyboardMarkup:
     sort_mode = str(sort_mode or "")
     cheap_text = "Сначала дешевые" + (" ✓" if sort_mode == "price_asc" else "")
     expensive_text = "Сначала дорогие" + (" ✓" if sort_mode == "price_desc" else "")
+    qty_low_text = "Меньше товаров" + (" ✓" if sort_mode == "qty_asc" else "")
+    qty_high_text = "Больше товаров" + (" ✓" if sort_mode == "qty_desc" else "")
     alpha_text = "По алфавиту" + (" ✓" if sort_mode == "country_asc" else "")
     rows = [
         [
             InlineKeyboardButton(text=cheap_text, callback_data="admin_catalog_sort_set:price_asc"),
             InlineKeyboardButton(text=expensive_text, callback_data="admin_catalog_sort_set:price_desc"),
+        ],
+        [
+            InlineKeyboardButton(text=qty_low_text, callback_data="admin_catalog_sort_set:qty_asc"),
+            InlineKeyboardButton(text=qty_high_text, callback_data="admin_catalog_sort_set:qty_desc"),
         ],
         [InlineKeyboardButton(text=alpha_text, callback_data="admin_catalog_sort_set:country_asc")],
         [InlineKeyboardButton(text="Показать страны", callback_data="admin_catalog", icon_custom_emoji_id=BTN_ICON_CHECK)],
@@ -4721,7 +4747,7 @@ async def catalog_filter_sort(query: CallbackQuery, state: FSMContext):
     except (AttributeError, ValueError):
         await query.answer("Сортировка не найдена.", show_alert=True)
         return
-    if sort_mode not in {"price_asc", "price_desc", "country_asc"}:
+    if sort_mode not in {"price_asc", "price_desc", "qty_asc", "qty_desc", "country_asc"}:
         await query.answer("Сортировка не найдена.", show_alert=True)
         return
     catalog_country_sort_modes[query.from_user.id] = sort_mode
@@ -6484,7 +6510,7 @@ async def admin_catalog_sort_set(query: CallbackQuery, state: FSMContext):
         return
     await state.clear()
     sort_mode = (query.data or "").split(":", 1)[1]
-    if sort_mode not in {"price_asc", "price_desc", "country_asc"}:
+    if sort_mode not in {"price_asc", "price_desc", "qty_asc", "qty_desc", "country_asc"}:
         await query.answer("Сортировка не найдена.", show_alert=True)
         return
     admin_catalog_sort_modes[query.from_user.id] = sort_mode
@@ -7318,7 +7344,7 @@ async def admin_stock_sort_set(query: CallbackQuery, state: FSMContext):
         return
     await state.clear()
     sort_mode = (query.data or "").split(":", 1)[1]
-    if sort_mode not in {"price_asc", "price_desc", "country_asc"}:
+    if sort_mode not in {"price_asc", "price_desc", "qty_asc", "qty_desc", "country_asc"}:
         await query.answer("Сортировка не найдена.", show_alert=True)
         return
     admin_stock_sort_modes[query.from_user.id] = sort_mode
