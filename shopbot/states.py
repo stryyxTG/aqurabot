@@ -16,6 +16,7 @@ class AdminAddProductStates(StatesGroup):
     waiting_price = State()
     waiting_description = State()
     waiting_extra_code = State()
+    waiting_duplicate_confirm = State()
 
 
 class AdminTopUpStates(StatesGroup):

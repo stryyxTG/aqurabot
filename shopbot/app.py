@@ -49,6 +49,7 @@ from .db import (
     clear_cart,
     delete_sold_product_with_history,
     force_remove_product,
+    find_existing_product_identity,
     get_all_users_with_purchases,
     get_catalog_country,
     get_balance,
@@ -478,6 +479,7 @@ FSM_CALLBACK_WHITELIST = {
     AdminAddProductStates.waiting_code.state: ("code_digit:", "code_backspace", "code_clear", "code_submit"),
     AdminAddProductStates.waiting_country.state: ("add_country:", "add_country_page", "add_country_search", "add_country_search_clear"),
     AdminAddProductStates.waiting_department.state: ("add_department:", "add_department_new", "add_department_back"),
+    AdminAddProductStates.waiting_duplicate_confirm.state: ("add_duplicate_",),
     ServiceOrderStates.waiting_recipient.state: ("service_order_cancel",),
     UserTopUpStates.waiting_receipt.state: ("cancel_topup_receipt",),
     AdminBroadcastStates.waiting_text.state: ("admin_broadcast_send", "broadcast_confirm"),
@@ -1726,6 +1728,57 @@ def product_group_admin_text(group) -> str:
         f"<b>Sample ID:</b> <code>{group['sample_product_id']}</code>"
     )
 
+
+
+def duplicate_product_decision_kb(*, bulk: bool = False) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text="Залить повторно", callback_data="add_duplicate_upload", icon_custom_emoji_id=BTN_ICON_CHECK)],
+        [InlineKeyboardButton(text="Пропустить", callback_data="add_duplicate_skip", icon_custom_emoji_id=BTN_ICON_CANCEL)],
+    ]
+    if bulk:
+        rows.append([
+            InlineKeyboardButton(text="Залить все повторы", callback_data="add_duplicate_upload_all", icon_custom_emoji_id=BTN_ICON_CHECK),
+            InlineKeyboardButton(text="Пропустить все", callback_data="add_duplicate_skip_all", icon_custom_emoji_id=BTN_ICON_CANCEL),
+        ])
+    rows.append([InlineKeyboardButton(text="Отменить", callback_data="cancel_flow:admin_home", icon_custom_emoji_id=BTN_ICON_CANCEL)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def duplicate_candidate_value(candidate: dict, key: str, default: str = "—") -> str:
+    value = str(candidate.get(key) or "").strip()
+    return html.escape(value) if value else default
+
+
+def duplicate_product_prompt_text(existing, candidate: dict, *, position: int | None = None, total: int | None = None) -> str:
+    prefix = ""
+    if position is not None and total:
+        prefix = f"<b>Повтор {position}/{total}</b>\n\n"
+    old_created = fmt_local_datetime(existing["created_at"]) if existing else "—"
+    old_phone = html.escape(str(existing["phone"] or "—")) if existing else "—"
+    old_tg_id = html.escape(str(existing["telegram_id"] or "—")) if existing else "—"
+    old_status = html.escape(str(existing["status"] or "—")) if existing else "—"
+    old_title = render_rich_text(existing["title"] or "—") if existing else "—"
+    old_country = html.escape(str(existing["country"] or "—")) if existing else "—"
+    old_price = fmt_money(float(existing["price"] or 0)) if existing else "—"
+    return (
+        f"{ICON_NOTICE} <b>Этот товар уже заливали ранее</b>\n\n"
+        f"{prefix}"
+        f"<b>Новая заливка</b>\n"
+        f"- <b>Телефон:</b> <code>{duplicate_candidate_value(candidate, 'phone')}</code>\n"
+        f"- <b>Telegram ID:</b> <code>{duplicate_candidate_value(candidate, 'telegram_id')}</code>\n"
+        f"- <b>Username:</b> {duplicate_candidate_value(candidate, 'username')}\n"
+        f"- <b>Файл:</b> <code>{duplicate_candidate_value(candidate, 'file_name')}</code>\n\n"
+        f"<b>Уже есть в магазине</b>\n"
+        f"- <b>ID товара:</b> <code>{existing['product_id'] if existing else '—'}</code>\n"
+        f"- <b>Телефон:</b> <code>{old_phone}</code>\n"
+        f"- <b>Telegram ID:</b> <code>{old_tg_id}</code>\n"
+        f"- <b>Название:</b> {old_title}\n"
+        f"- <b>Страна:</b> {old_country}\n"
+        f"- <b>Цена:</b> {old_price}\n"
+        f"- <b>Статус:</b> <code>{old_status}</code>\n"
+        f"- <b>Залит:</b> {html.escape(str(old_created))}\n\n"
+        "Что сделать с новой заливкой?"
+    )
 
 def has_server_session(product) -> bool:
     session_path = (product["session_path"] if product else "") or ""
@@ -8853,6 +8906,191 @@ async def admin_add_description(message: Message, state: FSMContext):
     await message.answer("Отправьте дополнительный к0d или заметку. Если не нужно — отправьте <code>-</code>.")
 
 
+
+async def find_duplicate_product_for_identity(*, phone: str = "", telegram_id: int | None = None):
+    return await find_existing_product_identity(phone=phone or "", telegram_id=telegram_id)
+
+
+def prepared_duplicate_items(prepared_items: list[dict], decisions: dict) -> list[dict]:
+    return [
+        item for item in prepared_items
+        if item.get("duplicate_product_id") and str(item.get("idx")) not in decisions
+    ]
+
+
+async def prepare_bulk_sessions_for_creation(data: dict, admin_id: int) -> tuple[list[dict], list[str]]:
+    bulk_sessions = data.get("bulk_sessions", []) or []
+    bulk_metadata_by_session = data.get("bulk_metadata_by_session", {}) or {}
+    bulk_session_names = data.get("bulk_session_names", {}) or {}
+    prepared_items: list[dict] = []
+    errors: list[str] = []
+
+    for idx, session_path in enumerate(bulk_sessions, 1):
+        try:
+            json_metadata = bulk_metadata_by_session.get(str(session_path))
+            session_twofa = (
+                str((json_metadata or {}).get("twofa_password") or "")
+                if json_metadata is not None
+                else str(data.get("twofa_password", ""))
+            )
+            alive_check = await session_manager.verify_session_file_alive(session_path)
+            if not alive_check.get("alive"):
+                error = alive_check.get("error", "Неизвестная ошибка")
+                discard_session_files(session_path)
+                errors.append(f"Сессия #{idx}: {html.escape(str(error))}")
+                logger.warning(
+                    "Bulk session rejected | admin=%s | item=%s/%s | session=%s | error=%s",
+                    admin_id,
+                    idx,
+                    len(bulk_sessions),
+                    Path(str(session_path)).name,
+                    error,
+                )
+                continue
+
+            phone = (alive_check.get("phone") or "").strip()
+            telegram_id = alive_check.get("user_id")
+            if telegram_id is not None:
+                telegram_id = int(telegram_id)
+            duplicate = await find_duplicate_product_for_identity(phone=phone, telegram_id=telegram_id)
+            prepared_items.append({
+                "idx": idx,
+                "session_path": str(session_path),
+                "file_name": bulk_session_names.get(str(session_path)) or Path(str(session_path)).name,
+                "phone": phone,
+                "telegram_id": telegram_id,
+                "username": alive_check.get("username") or "",
+                "first_name": alive_check.get("first_name") or "",
+                "twofa_password": session_twofa,
+                "duplicate_product_id": int(duplicate["product_id"]) if duplicate else None,
+            })
+        except Exception as exc:
+            errors.append(f"Товар #{idx}: {html.escape(str(exc))}")
+            logger.exception(
+                "Could not prepare bulk session | admin=%s | item=%s/%s | session=%s",
+                admin_id,
+                idx,
+                len(bulk_sessions),
+                Path(str(session_path)).name,
+            )
+    return prepared_items, errors
+
+
+async def create_prepared_bulk_products(data: dict, admin_id: int, prepared_items: list[dict], decisions: dict) -> tuple[list[int], list[str], int]:
+    created_products: list[int] = []
+    errors: list[str] = []
+    skipped = 0
+    extra_code = data.get("extra_code", "")
+
+    for item in prepared_items:
+        duplicate_id = item.get("duplicate_product_id")
+        decision = decisions.get(str(item.get("idx")))
+        if duplicate_id and decision != "upload":
+            skipped += 1
+            discard_session_files(item.get("session_path") or "")
+            logger.info(
+                "Duplicate bulk product skipped | admin=%s | duplicate=%s | item=%s | phone=%s",
+                admin_id,
+                duplicate_id,
+                item.get("idx"),
+                mask_phone(item.get("phone")),
+            )
+            continue
+        try:
+            product_id = await create_product(
+                title=data["title"],
+                country=data["country"],
+                price=float(data["price"]),
+                description=data.get("description", ""),
+                extra_code=extra_code,
+                session_path=item["session_path"],
+                phone=item.get("phone") or "",
+                telegram_id=item.get("telegram_id"),
+                username=item.get("username") or "",
+                first_name=item.get("first_name") or "",
+                twofa_password=item.get("twofa_password") or "",
+                created_by=admin_id,
+            )
+            created_products.append(product_id)
+            logger.info(
+                "Product created from bulk session | product=%s | admin=%s | item=%s | phone=%s | country=%s | title=%s | duplicate=%s",
+                product_id,
+                admin_id,
+                item.get("idx"),
+                mask_phone(item.get("phone")),
+                data.get("country", "-"),
+                plain_button_text(str(data.get("title", "-"))),
+                duplicate_id or "no",
+            )
+        except Exception as exc:
+            errors.append(f"Товар #{item.get('idx')}: {html.escape(str(exc))}")
+            logger.exception(
+                "Could not create product from prepared bulk session | admin=%s | item=%s | session=%s",
+                admin_id,
+                item.get("idx"),
+                Path(str(item.get("session_path") or "")).name,
+            )
+    return created_products, errors, skipped
+
+
+async def show_bulk_duplicate_prompt(message: Message, state: FSMContext, *, edit: bool = False) -> bool:
+    data = await state.get_data()
+    prepared_items = data.get("bulk_prepared_sessions", []) or []
+    decisions = data.get("bulk_duplicate_decisions", {}) or {}
+    pending = prepared_duplicate_items(prepared_items, decisions)
+    if not pending:
+        return False
+    current = pending[0]
+    duplicates_total = len([item for item in prepared_items if item.get("duplicate_product_id")])
+    decided_total = len([item for item in prepared_items if item.get("duplicate_product_id") and str(item.get("idx")) in decisions])
+    existing = await get_product(int(current["duplicate_product_id"]))
+    text = duplicate_product_prompt_text(existing, current, position=decided_total + 1, total=duplicates_total)
+    await state.set_state(AdminAddProductStates.waiting_duplicate_confirm)
+    if edit:
+        await safe_edit(message, text, duplicate_product_decision_kb(bulk=True))
+    else:
+        await message.answer(text, reply_markup=duplicate_product_decision_kb(bulk=True))
+    return True
+
+
+async def finish_bulk_product_creation(message: Message, state: FSMContext, admin_id: int) -> None:
+    data = await state.get_data()
+    prepared_items = data.get("bulk_prepared_sessions")
+    prepare_errors = data.get("bulk_prepare_errors", []) or []
+    if prepared_items is None:
+        prepared_items, prepare_errors = await prepare_bulk_sessions_for_creation(data, admin_id)
+        await state.update_data(bulk_prepared_sessions=prepared_items, bulk_prepare_errors=prepare_errors)
+
+    decisions = data.get("bulk_duplicate_decisions", {}) or {}
+    if prepared_duplicate_items(prepared_items, decisions):
+        await show_bulk_duplicate_prompt(message, state)
+        return
+
+    created_products, create_errors, skipped = await create_prepared_bulk_products(data, admin_id, prepared_items, decisions)
+    errors = list(prepare_errors) + create_errors
+    await state.clear()
+    await session_manager.cleanup(admin_id)
+
+    result_text = "<b>Товары созданы</b>\n\n"
+    result_text += f"Успешно: <b>{len(created_products)}</b>\n"
+    if skipped:
+        result_text += f"Пропущено повторов: <b>{skipped}</b>\n"
+    if errors:
+        result_text += f"Ошибок: <b>{len(errors)}</b>\n\n"
+        for error in errors[:5]:
+            result_text += f"  - {error}\n"
+        if len(errors) > 5:
+            result_text += f"  ... и ещё {len(errors) - 5} ошибок"
+
+    await message.answer(result_text, reply_markup=admin_home_kb())
+    logger.info(
+        "Bulk product creation finished | admin=%s | created=%s | skipped=%s | errors=%s",
+        admin_id,
+        len(created_products),
+        skipped,
+        len(errors),
+    )
+
 async def finish_admin_add_products(message: Message, state: FSMContext, admin_id: int) -> None:
     data = await state.get_data()
     extra_code = data.get("extra_code", "")
@@ -8867,101 +9105,16 @@ async def finish_admin_add_products(message: Message, state: FSMContext, admin_i
             plain_button_text(str(data.get("title", "-"))),
             data.get("price", "-"),
         )
-        await message.answer(f"Создаю товаров: {len(bulk_sessions)}...")
-
-        created_products = []
-        errors = []
-        bulk_metadata_by_session = data.get("bulk_metadata_by_session", {}) or {}
-
-        for idx, session_path in enumerate(bulk_sessions, 1):
-            try:
-                json_metadata = bulk_metadata_by_session.get(str(session_path))
-                session_twofa = (
-                    str((json_metadata or {}).get("twofa_password") or "")
-                    if json_metadata is not None
-                    else str(data.get("twofa_password", ""))
-                )
-                alive_check = await session_manager.verify_session_file_alive(session_path)
-                if not alive_check.get("alive"):
-                    error = alive_check.get("error", "Неизвестная ошибка")
-                    discard_session_files(session_path)
-                    errors.append(f"Сессия #{idx}: {error}")
-                    logger.warning(
-                        "Bulk session rejected | admin=%s | item=%s/%s | session=%s | error=%s",
-                        admin_id,
-                        idx,
-                        len(bulk_sessions),
-                        Path(str(session_path)).name,
-                        error,
-                    )
-                    continue
-
-                phone = (alive_check.get("phone") or "").strip()
-                telegram_id = alive_check.get("user_id")
-                if telegram_id is not None:
-                    telegram_id = int(telegram_id)
-
-                product_id = await create_product(
-                    title=data["title"],
-                    country=data["country"],
-                    price=float(data["price"]),
-                    description=data.get("description", ""),
-                    extra_code=extra_code,
-                    session_path=session_path,
-                    phone=phone,
-                    telegram_id=telegram_id,
-                    username=alive_check.get("username") or "",
-                    first_name=alive_check.get("first_name") or "",
-                    twofa_password=session_twofa,
-                    created_by=admin_id,
-                )
-                created_products.append(product_id)
-                logger.info(
-                    "Product created from bulk session | product=%s | admin=%s | item=%s/%s | phone=%s | country=%s | title=%s",
-                    product_id,
-                    admin_id,
-                    idx,
-                    len(bulk_sessions),
-                    mask_phone(phone),
-                    data.get("country", "-"),
-                    plain_button_text(str(data.get("title", "-"))),
-                )
-
-            except Exception as exc:
-                errors.append(f"Товар #{idx}: {html.escape(str(exc))}")
-                logger.exception(
-                    "Could not create product from bulk session | admin=%s | item=%s/%s | session=%s",
-                    admin_id,
-                    idx,
-                    len(bulk_sessions),
-                    Path(str(session_path)).name,
-                )
-
-        await state.clear()
-        await session_manager.cleanup(admin_id)
-
-        result_text = f"<b>Товары созданы</b>\n\n"
-        result_text += f"Успешно: <b>{len(created_products)}</b>\n"
-        if errors:
-            result_text += f"Ошибок: <b>{len(errors)}</b>\n\n"
-            for error in errors[:5]:
-                result_text += f"  • {error}\n"
-            if len(errors) > 5:
-                result_text += f"  ... и ещё {len(errors) - 5} ошибок"
-
-        await message.answer(result_text, reply_markup=admin_home_kb())
-        logger.info(
-            "Bulk product creation finished | admin=%s | created=%s | errors=%s",
-            admin_id,
-            len(created_products),
-            len(errors),
-        )
+        if data.get("bulk_prepared_sessions") is None:
+            await message.answer(f"Проверяю и создаю товаров: {len(bulk_sessions)}...")
+        await finish_bulk_product_creation(message, state, admin_id)
         return
 
     try:
         uploaded_session_path = data.get("session_path")
-        uploaded_alive_check = None
-        if uploaded_session_path:
+        prepared_single = data.get("single_prepared_product") or {}
+        uploaded_alive_check = prepared_single.get("uploaded_alive_check")
+        if uploaded_session_path and not uploaded_alive_check:
             uploaded_alive_check = await session_manager.verify_session_file_alive(uploaded_session_path)
             if not uploaded_alive_check.get("alive"):
                 error = uploaded_alive_check.get("error", "Неизвестная ошибка")
@@ -8974,17 +9127,56 @@ async def finish_admin_add_products(message: Message, state: FSMContext, admin_i
                     reply_markup=admin_home_kb()
                 )
                 return
+
+        candidate = prepared_single or {
+            "session_path": str(uploaded_session_path) if uploaded_session_path else "pending",
+            "phone": (uploaded_alive_check.get("phone") if uploaded_alive_check else data.get("phone", "")) or "",
+            "telegram_id": (uploaded_alive_check.get("user_id") if uploaded_alive_check else data.get("telegram_id")),
+            "username": (uploaded_alive_check.get("username") if uploaded_alive_check else data.get("username", "")) or "",
+            "first_name": (uploaded_alive_check.get("first_name") if uploaded_alive_check else data.get("first_name", "")) or "",
+            "file_name": Path(str(uploaded_session_path)).name if uploaded_session_path else "вход по к0d",
+            "uploaded_alive_check": uploaded_alive_check,
+        }
+
+        duplicate_decision = data.get("single_duplicate_decision")
+        if duplicate_decision == "skip":
+            if uploaded_session_path:
+                discard_session_files(uploaded_session_path)
+            await state.clear()
+            await session_manager.cleanup(admin_id)
+            await message.answer("Повтор пропущен. Товар не добавлен.", reply_markup=admin_home_kb())
+            return
+
+        if not data.get("single_duplicate_checked"):
+            duplicate = await find_duplicate_product_for_identity(
+                phone=str(candidate.get("phone") or ""),
+                telegram_id=candidate.get("telegram_id"),
+            )
+            if duplicate:
+                await state.update_data(
+                    single_prepared_product=candidate,
+                    single_duplicate_checked=True,
+                    single_duplicate_product_id=int(duplicate["product_id"]),
+                )
+                await state.set_state(AdminAddProductStates.waiting_duplicate_confirm)
+                await message.answer(
+                    duplicate_product_prompt_text(duplicate, candidate),
+                    reply_markup=duplicate_product_decision_kb(),
+                )
+                return
+            await state.update_data(single_duplicate_checked=True, single_prepared_product=candidate)
+
         product_id = await create_product(
             title=data["title"],
             country=data["country"],
             price=float(data["price"]),
             description=data.get("description", ""),
             extra_code=extra_code,
-            session_path=str(uploaded_session_path) if uploaded_session_path else "pending",
-            phone=(uploaded_alive_check.get("phone") if uploaded_alive_check else data.get("phone", "")) or "",
-            telegram_id=(uploaded_alive_check.get("user_id") if uploaded_alive_check else data.get("telegram_id")),
-            username=(uploaded_alive_check.get("username") if uploaded_alive_check else data.get("username", "")) or "",
-            first_name=(uploaded_alive_check.get("first_name") if uploaded_alive_check else data.get("first_name", "")) or "",
+            session_path=str(candidate.get("session_path") or "pending"),
+            phone=str(candidate.get("phone") or ""),
+            telegram_id=candidate.get("telegram_id"),
+            username=str(candidate.get("username") or ""),
+            first_name=str(candidate.get("first_name") or ""),
             twofa_password=data.get("twofa_password", ""),
             created_by=admin_id,
         )
@@ -9038,6 +9230,55 @@ async def admin_add_extra_code(message: Message, state: FSMContext):
     await finish_admin_add_products(message, state, message.from_user.id)
 
 
+
+@dp.callback_query(F.data.startswith("add_duplicate_"))
+async def admin_add_duplicate_decision(query: CallbackQuery, state: FSMContext):
+    await ensure_known_user(query)
+    if not is_admin(query.from_user.id):
+        await query.answer()
+        return
+    if await state.get_state() != AdminAddProductStates.waiting_duplicate_confirm.state:
+        await query.answer("Сейчас повтор не подтверждается.", show_alert=True)
+        return
+
+    action = (query.data or "").removeprefix("add_duplicate_")
+    if action not in {"upload", "skip", "upload_all", "skip_all"}:
+        await query.answer("Неизвестное действие.", show_alert=True)
+        return
+
+    data = await state.get_data()
+    if data.get("bulk_sessions"):
+        prepared_items = data.get("bulk_prepared_sessions", []) or []
+        decisions = data.get("bulk_duplicate_decisions", {}) or {}
+        pending = prepared_duplicate_items(prepared_items, decisions)
+        if not pending:
+            await query.answer("Повторов больше нет.")
+            await finish_bulk_product_creation(query.message, state, query.from_user.id)
+            return
+
+        decision = "upload" if action.startswith("upload") else "skip"
+        targets = pending if action.endswith("_all") else [pending[0]]
+        for item in targets:
+            decisions[str(item.get("idx"))] = decision
+        await state.update_data(bulk_duplicate_decisions=decisions)
+        await query.answer("Решение сохранено.")
+
+        if await show_bulk_duplicate_prompt(query.message, state, edit=True):
+            return
+
+        await safe_edit(query.message, "Решения по повторам сохранены.\n\nСоздаю товары...")
+        await finish_bulk_product_creation(query.message, state, query.from_user.id)
+        return
+
+    decision = "upload" if action.startswith("upload") else "skip"
+    await state.update_data(single_duplicate_decision=decision)
+    await query.answer("Заливаю повторно." if decision == "upload" else "Повтор будет пропущен.")
+    await safe_edit(
+        query.message,
+        "Заливаю повторно..." if decision == "upload" else "Повтор пропускается...",
+    )
+    await finish_admin_add_products(query.message, state, query.from_user.id)
+
 @dp.callback_query(F.data.startswith("cancel_flow:"))
 async def cancel_flow(query: CallbackQuery, state: FSMContext):
     await query.answer()
@@ -9058,6 +9299,7 @@ async def cancel_flow(query: CallbackQuery, state: FSMContext):
         AdminAddProductStates.waiting_price.state,
         AdminAddProductStates.waiting_description.state,
         AdminAddProductStates.waiting_extra_code.state,
+        AdminAddProductStates.waiting_duplicate_confirm.state,
     }
     if is_admin_add_flow:
         logger.info(

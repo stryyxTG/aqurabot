@@ -625,13 +625,20 @@ async def find_existing_product_identity(
     args: list[object] = []
     session_path = (session_path or "").strip()
     phone = (phone or "").strip()
+    phone_digits = "".join(ch for ch in phone if ch.isdigit())
     extra_code = (extra_code or "").strip()
     if session_path:
         conditions.append("session_path = ?")
         args.append(session_path)
-    if phone:
-        conditions.append("phone = ?")
-        args.append(phone)
+    if phone_digits:
+        normalized_phone_sql = (
+            "replace(replace(replace(replace(replace(replace(replace(replace("
+            "replace(replace(COALESCE(phone, ''), '+', ''), ' ', ''), '-', ''), "
+            "'(', ''), ')', ''), '.', ''), CHAR(9), ''), CHAR(10), ''), CHAR(13), ''), "
+            "'\u00a0', '')"
+        )
+        conditions.append(f"{normalized_phone_sql} = ?")
+        args.append(phone_digits)
     if telegram_id is not None:
         conditions.append("telegram_id = ?")
         args.append(int(telegram_id))
