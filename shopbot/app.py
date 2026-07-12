@@ -2881,9 +2881,7 @@ async def clean_confirm(query: CallbackQuery, state: FSMContext):
         "<b>Подтвердите ручную очистку</b>\n\n"
         "Будут удалены локальные session- и JSON-файлы проданных товаров.\n"
         "Telegram-сессии не завершаются и авторизация аккаунтов сохраняется.\n"
-        "Товар будет полностью удалён из базы.\n"
-        "Удалится связанная история покупки.\n"
-        "Восстановление через бота невозможно.",
+        "Товары и история покупок в базе останутся без изменений.",
         admin_clean_confirm_kb(flow_id),
     )
 
@@ -2915,7 +2913,7 @@ async def clean_execute(query: CallbackQuery, state: FSMContext):
     )
 
     result = await scan_sold_sessions_for_clean()
-    deleted_products = 0
+    cleaned_products = 0
     deleted_files = 0
     deleted_size = 0
     failed = 0
@@ -2961,26 +2959,15 @@ async def clean_execute(query: CallbackQuery, state: FSMContext):
         deleted_files += max(removed_count, expected_removed_count)
         deleted_size += max(removed_size, expected_removed_size)
         await update_product_session_path(product_id, "")
-
-        try:
-            delete_result = await delete_sold_product_with_history(product_id, session_path, allow_session_cleared=True)
-        except Exception:
-            failed += 1
-            logger.exception("Could not delete sold product #%s after session cleanup", product_id)
-            continue
-        if delete_result == "deleted":
-            deleted_products += 1
-        else:
-            failed += 1
-            logger.warning("Sold product #%s was not deleted: %s", product_id, delete_result)
+        cleaned_products += 1
 
     report = (
         "<b>Очистка завершена</b>\n\n"
-        f"<b>Удалено товаров:</b> {deleted_products}\n"
+        f"<b>Очищено товаров:</b> {cleaned_products}\n"
         f"<b>Удалено файлов:</b> {deleted_files}\n"
         f"<b>Освобождено:</b> {human_size(deleted_size)}\n"
         f"<b>Ошибок:</b> {failed}\n\n"
-        "Telegram logout не выполнялся: удалены только локальные файлы с сервера."
+        "Удалены только локальные файлы с сервера. Telegram logout, товары и история покупок не затронуты."
     )
     await render_clean_menu(query.message, state, edit=True, notice=report)
 
