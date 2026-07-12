@@ -494,7 +494,7 @@ def is_fsm_callback_allowed(current_state: str, callback_data: str) -> bool:
     if callback_data.startswith("cancel_flow:"):
         return True
     for allowed in FSM_CALLBACK_WHITELIST.get(current_state, ()):
-        if allowed.endswith(":"):
+        if allowed.endswith((":", "_")):
             if callback_data.startswith(allowed):
                 return True
         elif callback_data == allowed or callback_data.startswith(f"{allowed}:"):
