@@ -5559,18 +5559,20 @@ def admin_product_back_callback_from_token(token: str) -> str:
             return f"catalog_country:{country_id}:{page}"
     if token in {"u", "public_catalog"}:
         return "catalog_accounts"
+    if token == "scan":
+        return "admin_scan_failed_list"
     return "admin_stock_catalog"
 
 
 def admin_product_detail_callback_from_token(product_id: int, token: str) -> str:
     if token in {"s", "search"}:
-        return f"admin_stock_product:{product_id}:search"
+        return f"ap:{product_id}:s"
     if token.startswith(("g:", "group:")):
-        return f"admin_stock_product:{product_id}:group:{token.split(':', 1)[1]}"
+        return f"ap:{product_id}:g:{token.split(':', 1)[1]}"
     if token.startswith(("c:", "country:")):
-        return f"admin_stock_product:{product_id}:country:{token.split(':', 1)[1]}"
+        return f"ap:{product_id}:c:{token.split(':', 1)[1]}"
     if token.startswith(("h:", "sold:")):
-        return f"admin_stock_product:{product_id}:sold:{token.split(':', 1)[1]}"
+        return f"ap:{product_id}:h:{token.split(':', 1)[1]}"
     if token.startswith(("a:", "public_all:")):
         return f"product_{product_id}:all:{token.split(':', 1)[1]}"
     if token.startswith(("u:", "public_country:")):
@@ -5579,6 +5581,8 @@ def admin_product_detail_callback_from_token(product_id: int, token: str) -> str
             return f"product_{product_id}:c{parts[1]}:{parts[2]}"
     if token in {"u", "public_catalog"}:
         return "catalog_accounts"
+    if token == "scan":
+        return f"scan_err_det:{product_id}"
     return f"admin_stock_product:{product_id}"
 
 
@@ -6548,6 +6552,23 @@ async def admin_reset_revenue(query: CallbackQuery):
 
 
 @dp.callback_query(F.data == "admin_reset_revenue_confirm")
+async def admin_reset_revenue_final_ask(query: CallbackQuery):
+    await ensure_known_user(query)
+    if not is_admin(query.from_user.id):
+        return
+    await query.answer()
+    await safe_edit(
+        query.message,
+        "<b>Финальное подтверждение</b>\n\n"
+        "Сбросить точку отсчёта выручки? История продаж сохранится, но действие отменить нельзя.",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Да, окончательно сбросить", callback_data="admin_reset_revenue_go", icon_custom_emoji_id=BTN_ICON_CANCEL)],
+            [InlineKeyboardButton(text="Нет, вернуться", callback_data="admin_stats", icon_custom_emoji_id=BTN_ICON_BACK)],
+        ]),
+    )
+
+
+@dp.callback_query(F.data == "admin_reset_revenue_go")
 async def admin_reset_revenue_confirm(query: CallbackQuery):
     await ensure_known_user(query)
     await query.answer()
@@ -6568,6 +6589,24 @@ async def admin_reset_revenue_confirm(query: CallbackQuery):
 
 
 @dp.callback_query(F.data == "admin_reset_stats_confirm")
+async def admin_reset_stats_final_ask(query: CallbackQuery):
+    await ensure_known_user(query)
+    if not is_admin(query.from_user.id):
+        return
+    await query.answer()
+    await safe_edit(
+        query.message,
+        "<b>Финальное подтверждение</b>\n\n"
+        "Будут очищены история покупок и балансы пользователей. Товары сохранятся.\n\n"
+        f"{ICON_NOTICE} Действие необратимо. Точно продолжить?",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Да, окончательно сбросить", callback_data="admin_reset_stats_go", icon_custom_emoji_id=BTN_ICON_CANCEL)],
+            [InlineKeyboardButton(text="Нет, вернуться", callback_data="admin_stats", icon_custom_emoji_id=BTN_ICON_BACK)],
+        ]),
+    )
+
+
+@dp.callback_query(F.data == "admin_reset_stats_go")
 async def admin_reset_stats_confirm(query: CallbackQuery):
     await ensure_known_user(query)
     await query.answer()
@@ -7172,7 +7211,42 @@ async def admin_remove_group_ask(query: CallbackQuery):
     await safe_edit(query.message, text, admin_product_group_remove_confirm_kb(sample_product_id, country_id))
 
 
+@dp.callback_query(F.data.startswith("admin_remove_group_step2:"))
 @dp.callback_query(F.data.startswith("admin_remove_group:"))
+async def admin_remove_group_final_ask(query: CallbackQuery):
+    await ensure_known_user(query)
+    if not is_admin(query.from_user.id):
+        return
+    try:
+        _, sample_raw, country_raw = (query.data or "").split(":", 2)
+        sample_product_id = int(sample_raw)
+        country_id = int(country_raw)
+    except (ValueError, IndexError):
+        await query.answer("Отдел не найден.", show_alert=True)
+        return
+    group = await get_product_department(sample_product_id)
+    if not group:
+        await query.answer("Отдел не найден.", show_alert=True)
+        return
+    if int(group["stock_count"] or 0) > 0:
+        await query.answer("Нельзя удалить отдел, пока в нём есть товары.", show_alert=True)
+        return
+    await query.answer()
+    await safe_edit(
+        query.message,
+        "<b>Финальное подтверждение удаления отдела</b>\n\n"
+        f"<b>Название:</b> {render_rich_text(group['title'])}\n"
+        f"<b>Страна:</b> {html.escape(str(group['country']))}\n"
+        f"<b>Всего товаров:</b> {int(group['total_count'] or 0)}\n\n"
+        f"{ICON_NOTICE} Отдел исчезнет из каталога. Точно удалить?",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Да, удалить отдел", callback_data=f"admin_remove_group_go:{sample_product_id}:{country_id}", icon_custom_emoji_id=BTN_ICON_CANCEL)],
+            [InlineKeyboardButton(text="Нет, вернуться", callback_data=f"admin_product_group:{sample_product_id}:{country_id}", icon_custom_emoji_id=BTN_ICON_BACK)],
+        ]),
+    )
+
+
+@dp.callback_query(F.data.startswith("admin_remove_group_go:"))
 async def admin_remove_group(query: CallbackQuery):
     await ensure_known_user(query)
     await query.answer()
@@ -7461,7 +7535,35 @@ async def admin_country_remove_ask(query: CallbackQuery):
     await safe_edit(query.message, text, admin_country_remove_confirm_kb(country_id))
 
 
+@dp.callback_query(F.data.startswith("admin_country_remove_step2:"))
 @dp.callback_query(F.data.startswith("admin_country_remove:"))
+async def admin_country_remove_final_ask(query: CallbackQuery):
+    await ensure_known_user(query)
+    if not is_admin(query.from_user.id):
+        return
+    country_id = int((query.data or "").split(":", 1)[1])
+    country = await get_catalog_country(country_id)
+    if not country:
+        await query.answer("Кнопка страны не найдена.", show_alert=True)
+        return
+    total = await count_products(country=country["name"])
+    if total > 0:
+        await query.answer("Нельзя удалить страну, пока в ней есть товары.", show_alert=True)
+        return
+    await query.answer()
+    await safe_edit(
+        query.message,
+        "<b>Финальное подтверждение удаления страны</b>\n\n"
+        f"<b>Страна:</b> {html.escape(str(country['name']))}\n\n"
+        f"{ICON_NOTICE} Кнопка страны исчезнет из каталога. Точно удалить?",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Да, удалить страну", callback_data=f"admin_country_remove_go:{country_id}", icon_custom_emoji_id=BTN_ICON_CANCEL)],
+            [InlineKeyboardButton(text="Нет, вернуться", callback_data=f"admin_country:{country_id}", icon_custom_emoji_id=BTN_ICON_BACK)],
+        ]),
+    )
+
+
+@dp.callback_query(F.data.startswith("admin_country_remove_go:"))
 async def admin_country_remove(query: CallbackQuery):
     await ensure_known_user(query)
     await query.answer()
@@ -7950,6 +8052,7 @@ async def admin_download_tdata(query: CallbackQuery):
         )
 
 
+@dp.callback_query(F.data.startswith("ap:"))
 @dp.callback_query(F.data.startswith("admin_stock_product:"))
 async def admin_stock_product_detail(query: CallbackQuery):
     await ensure_known_user(query)
@@ -7957,7 +8060,11 @@ async def admin_stock_product_detail(query: CallbackQuery):
     if not is_admin(query.from_user.id):
         return
 
-    parts = query.data.split(":")
+    parts = (query.data or "").split(":")
+    if parts and parts[0] == "ap" and len(parts) >= 3:
+        route_names = {"s": "search", "h": "sold", "g": "group", "c": "country"}
+        route = route_names.get(parts[2])
+        parts = ["admin_stock_product", parts[1], route or "catalog", *parts[3:]]
     try:
         product_id = int(parts[1])
     except (IndexError, ValueError):
@@ -8110,7 +8217,10 @@ async def admin_terminate_sessions_ask(query: CallbackQuery):
     await safe_edit(query.message, text, admin_terminate_sessions_step1_kb(product_id, back_token))
 
 
+@dp.callback_query(F.data.startswith("ats_step2:"))
+@dp.callback_query(F.data.startswith("ats_confirm:"))
 @dp.callback_query(F.data.startswith("admin_terminate_sessions_step2:"))
+@dp.callback_query(F.data.startswith("admin_terminate_sessions_confirm:"))
 async def admin_terminate_sessions_step2(query: CallbackQuery):
     await ensure_known_user(query)
     await query.answer()
@@ -8131,8 +8241,7 @@ async def admin_terminate_sessions_step2(query: CallbackQuery):
     await safe_edit(query.message, text, admin_terminate_sessions_step2_kb(product_id, back_token))
 
 
-@dp.callback_query(F.data.startswith("ats_confirm:"))
-@dp.callback_query(F.data.startswith("admin_terminate_sessions_confirm:"))
+@dp.callback_query(F.data.startswith("ats_go:"))
 async def admin_terminate_sessions_confirm(query: CallbackQuery):
     await ensure_known_user(query)
     await query.answer("Завершаю сессии...")
@@ -8296,44 +8405,160 @@ async def admin_stuck_return(query: CallbackQuery):
 
 
 @dp.callback_query(F.data.startswith("admin_stuck_remove:"))
+async def admin_stuck_remove_ask(query: CallbackQuery):
+    await ensure_known_user(query)
+    if not is_admin(query.from_user.id):
+        return
+    product_id = int((query.data or "").split(":", 1)[1])
+    product = await get_product(product_id)
+    if not product:
+        await query.answer("Товар не найден.", show_alert=True)
+        return
+    await query.answer()
+    await safe_edit(
+        query.message,
+        "<b>Удалить застрявший товар без возврата?</b>\n\n"
+        f"<b>ID:</b> <code>{product_id}</code>\n"
+        f"<b>Покупатель:</b> <code>{product['sold_to'] or '—'}</code>\n"
+        f"<b>Сумма без возврата:</b> {fmt_money(float(product['sold_price'] or product['price'] or 0))}\n\n"
+        f"{ICON_NOTICE} Средства покупателю возвращены не будут.",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Продолжить удаление", callback_data=f"stuck_rm2:{product_id}", icon_custom_emoji_id=BTN_ICON_CANCEL)],
+            [InlineKeyboardButton(text="Нет, вернуться", callback_data=f"admin_stuck_detail:{product_id}", icon_custom_emoji_id=BTN_ICON_BACK)],
+        ]),
+    )
+
+
+@dp.callback_query(F.data.startswith("stuck_rm2:"))
+async def admin_stuck_remove_final_ask(query: CallbackQuery):
+    await ensure_known_user(query)
+    if not is_admin(query.from_user.id):
+        return
+    product_id = int((query.data or "").split(":", 1)[1])
+    product = await get_product(product_id)
+    if not product:
+        await query.answer("Товар не найден.", show_alert=True)
+        return
+    await query.answer()
+    await safe_edit(
+        query.message,
+        "<b>Финальное подтверждение</b>\n\n"
+        f"Удалить товар <code>#{product_id}</code> без возврата покупателю?\n\n"
+        f"{ICON_NOTICE} Это действие необратимо.",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Да, удалить без возврата", callback_data=f"stuck_rm_go:{product_id}", icon_custom_emoji_id=BTN_ICON_CANCEL)],
+            [InlineKeyboardButton(text="Нет, вернуться", callback_data=f"admin_stuck_detail:{product_id}", icon_custom_emoji_id=BTN_ICON_BACK)],
+        ]),
+    )
+
+
+@dp.callback_query(F.data.startswith("stuck_rm_go:"))
 async def admin_stuck_remove(query: CallbackQuery):
     await ensure_known_user(query)
     if not is_admin(query.from_user.id):
         return
-    product_id = int(query.data.split(":", 1)[1])
+    product_id = int((query.data or "").split(":", 1)[1])
     if await force_remove_product(product_id):
-        await log_purchase("admin_action", action=f"Застрявший товар #{product_id} удален без возврата средств", admin_id=query.from_user.id)
-        await query.answer("Товар удален без возврата средств.")
+        await log_purchase("admin_action", action=f"Застрявший товар #{product_id} удалён без возврата после двойного подтверждения", admin_id=query.from_user.id)
+        await admin_stuck_products(query)
     else:
         await query.answer("Не удалось удалить товар.", show_alert=True)
-    await admin_stuck_products(query)
 
 
+def parse_product_remove_callback(callback_data: str) -> tuple[int, str]:
+    if callback_data.startswith("admin_remove_"):
+        return int(callback_data.rsplit("_", 1)[1]), "scan"
+    parts = callback_data.split(":")
+    product_id = int(parts[1])
+    token = ":".join(parts[2:]) if len(parts) > 2 else "x"
+    return product_id, token
+
+
+def admin_product_remove_confirm_kb(product_id: int, token: str, *, final: bool) -> InlineKeyboardMarkup:
+    detail_callback = admin_product_detail_callback_from_token(product_id, token)
+    confirm_prefix = "ard_go" if final else "ard2"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="Да, удалить безвозвратно" if final else "Продолжить удаление",
+            callback_data=f"{confirm_prefix}:{product_id}:{token}",
+            icon_custom_emoji_id=BTN_ICON_CANCEL,
+        )],
+        [InlineKeyboardButton(text="Нет, вернуться", callback_data=detail_callback, icon_custom_emoji_id=BTN_ICON_BACK)],
+    ])
+
+
+@dp.callback_query(F.data.startswith("ard1:"))
 @dp.callback_query(F.data.startswith("admin_remove:"))
 @dp.callback_query(F.data.startswith("admin_remove_"))
-async def admin_remove(query: CallbackQuery):
+async def admin_remove_ask(query: CallbackQuery):
     await ensure_known_user(query)
-    await query.answer()
     if not is_admin(query.from_user.id):
         return
-    callback_data = query.data or ""
-    back_callback = "admin_home"
     try:
-        if callback_data.startswith("admin_remove:"):
-            parts = callback_data.split(":")
-            product_id = int(parts[1])
-            token = ":".join(parts[2:]) if len(parts) > 2 else ""
-            if token:
-                back_callback = admin_product_back_callback_from_token(token)
-        else:
-            product_id = int(callback_data.split("_")[-1])
+        product_id, token = parse_product_remove_callback(query.data or "")
     except (IndexError, ValueError):
         await query.answer("Некорректный товар.", show_alert=True)
         return
     product = await get_product(product_id)
     if not product:
         await query.answer("Товар не найден.", show_alert=True)
-        await safe_edit(query.message, "<b>Админка</b>", admin_home_kb())
+        return
+    await query.answer()
+    sold_warning = (
+        "\n\nБудут удалены история покупки и серверная session."
+        if product["status"] == "sold"
+        else "\n\nТовар будет снят с продажи и удалён со склада."
+    )
+    text = (
+        "<b>Удалить товар?</b>\n\n"
+        f"<b>ID:</b> <code>{product_id}</code>\n"
+        f"<b>Телефон:</b> <code>{html.escape(product['phone'] or '—')}</code>\n"
+        f"<b>Статус:</b> {html.escape(str(product['status'] or '—'))}"
+        f"{sold_warning}\n\n"
+        f"{ICON_NOTICE} После следующего подтверждения будет показана финальная проверка."
+    )
+    await safe_edit(query.message, text, admin_product_remove_confirm_kb(product_id, token, final=False))
+
+
+@dp.callback_query(F.data.startswith("ard2:"))
+async def admin_remove_final_ask(query: CallbackQuery):
+    await ensure_known_user(query)
+    if not is_admin(query.from_user.id):
+        return
+    try:
+        product_id, token = parse_product_remove_callback(query.data or "")
+    except (IndexError, ValueError):
+        await query.answer("Некорректный товар.", show_alert=True)
+        return
+    product = await get_product(product_id)
+    if not product:
+        await query.answer("Товар не найден.", show_alert=True)
+        return
+    await query.answer()
+    await safe_edit(
+        query.message,
+        "<b>Финальное подтверждение удаления</b>\n\n"
+        f"Товар <code>#{product_id}</code> · <code>{html.escape(product['phone'] or '—')}</code>\n\n"
+        f"{ICON_NOTICE} Действие необратимо. Точно удалить товар?",
+        admin_product_remove_confirm_kb(product_id, token, final=True),
+    )
+
+
+@dp.callback_query(F.data.startswith("ard_go:"))
+async def admin_remove(query: CallbackQuery):
+    await ensure_known_user(query)
+    if not is_admin(query.from_user.id):
+        return
+    try:
+        product_id, token = parse_product_remove_callback(query.data or "")
+    except (IndexError, ValueError):
+        await query.answer("Некорректный товар.", show_alert=True)
+        return
+    back_callback = admin_product_back_callback_from_token(token)
+    product = await get_product(product_id)
+    if not product:
+        await query.answer("Товар не найден.", show_alert=True)
+        await safe_edit(query.message, "<b>Товар уже отсутствует</b>", admin_post_remove_kb(back_callback))
         return
 
     if product["status"] == "sold":
@@ -8346,31 +8571,30 @@ async def admin_remove(query: CallbackQuery):
             allow_session_cleared=True,
         )
         if delete_result == "deleted":
-            await query.answer("Проданный товар удален.")
+            await query.answer("Проданный товар удалён.")
             await log_purchase(
                 "admin_action",
-                action=f"Проданный товар #{product_id} удален из карточки с очисткой сессии",
+                action=f"Проданный товар #{product_id} удалён после двойного подтверждения",
                 admin_id=query.from_user.id,
             )
+            await safe_edit(query.message, f"<b>Товар #{product_id} удалён.</b>", admin_post_remove_kb(back_callback))
         else:
             await query.answer(f"Не удалось удалить: {delete_result}", show_alert=True)
-        await safe_edit(query.message, f"<b>Товар #{product_id} удален.</b>", admin_post_remove_kb(back_callback))
         return
-    
+
     removed = False
-    # Пытаемся обычное удаление, если не сработает - принудительное
     if await remove_product(product_id):
         await query.answer("Товар снят с продажи.")
-        await log_purchase("admin_action", action=f"Товар #{product_id} снят с продажи", admin_id=query.from_user.id)
+        await log_purchase("admin_action", action=f"Товар #{product_id} снят с продажи после двойного подтверждения", admin_id=query.from_user.id)
         removed = True
     elif await force_remove_product(product_id):
-        await query.answer("Товар удален.")
-        await log_purchase("admin_action", action=f"Товар #{product_id} принудительно удален", admin_id=query.from_user.id)
+        await query.answer("Товар удалён.")
+        await log_purchase("admin_action", action=f"Товар #{product_id} принудительно удалён после двойного подтверждения", admin_id=query.from_user.id)
         removed = True
     else:
         await query.answer("Товар не найден.", show_alert=True)
     if removed:
-        await safe_edit(query.message, f"<b>Товар #{product_id} удален.</b>", admin_post_remove_kb(back_callback))
+        await safe_edit(query.message, f"<b>Товар #{product_id} удалён.</b>", admin_post_remove_kb(back_callback))
 
 
 @dp.callback_query(F.data == "admin_topup")
