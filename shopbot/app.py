@@ -95,6 +95,7 @@ from .db import (
     record_crypto_invoice,
     rename_catalog_country,
     remove_catalog_country,
+    remove_available_products_in_department,
     remove_product_department,
     remove_product_from_cart,
     remove_topup_reviewer,
@@ -7136,6 +7137,117 @@ async def admin_group_export(query: CallbackQuery):
         InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
             text="Назад к отделу",
             callback_data=f"admin_product_group:{sample_product_id}:{country_id}",
+            icon_custom_emoji_id=BTN_ICON_BACK,
+        )]]),
+    )
+
+
+@dp.callback_query(F.data.startswith("admin_group_remove_products_ask:"))
+async def admin_group_remove_products_ask(query: CallbackQuery):
+    await ensure_known_user(query)
+    if not is_admin(query.from_user.id):
+        return
+    try:
+        _, sample_raw, country_raw = (query.data or "").split(":", 2)
+        sample_product_id = int(sample_raw)
+        country_id = int(country_raw)
+    except (TypeError, ValueError):
+        await query.answer("Отдел не найден.", show_alert=True)
+        return
+    group = await get_product_department(sample_product_id)
+    if not group:
+        await query.answer("Отдел не найден.", show_alert=True)
+        return
+    available_count = await count_available_products_in_department(sample_product_id)
+    if available_count <= 0:
+        await query.answer("В отделе нет товаров в наличии.", show_alert=True)
+        return
+    await query.answer()
+    await safe_edit(
+        query.message,
+        "<b>Удалить все товары отдела?</b>\n\n"
+        f"<b>Отдел:</b> {render_rich_text(group['title'])}\n"
+        f"{ICON_COUNTRY} <b>Страна:</b> {html.escape(str(group['country']))}\n"
+        f"<b>Будет снято с продажи:</b> {available_count}\n\n"
+        "Файлы session, JSON и tdata останутся на сервере. Проданные товары и историю покупок бот не затронет.",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Продолжить удаление", callback_data=f"admin_group_remove_products_step2:{sample_product_id}:{country_id}", icon_custom_emoji_id=BTN_ICON_CANCEL)],
+            [InlineKeyboardButton(text="Нет, вернуться", callback_data=f"admin_product_group:{sample_product_id}:{country_id}", icon_custom_emoji_id=BTN_ICON_BACK)],
+        ]),
+    )
+
+
+@dp.callback_query(F.data.startswith("admin_group_remove_products_step2:"))
+async def admin_group_remove_products_final_ask(query: CallbackQuery):
+    await ensure_known_user(query)
+    if not is_admin(query.from_user.id):
+        return
+    try:
+        _, sample_raw, country_raw = (query.data or "").split(":", 2)
+        sample_product_id = int(sample_raw)
+        country_id = int(country_raw)
+    except (TypeError, ValueError):
+        await query.answer("Отдел не найден.", show_alert=True)
+        return
+    group = await get_product_department(sample_product_id)
+    available_count = await count_available_products_in_department(sample_product_id) if group else 0
+    if not group or available_count <= 0:
+        await query.answer("В отделе больше нет товаров в наличии.", show_alert=True)
+        return
+    await query.answer()
+    await safe_edit(
+        query.message,
+        "<b>Финальное подтверждение</b>\n\n"
+        f"Снять с продажи все товары отдела: <b>{available_count}</b> шт.\n\n"
+        f"{ICON_NOTICE} Товары исчезнут из бота, но их session, JSON и tdata сохранятся на сервере.",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Да, удалить товары", callback_data=f"admin_group_remove_products_go:{sample_product_id}:{country_id}", icon_custom_emoji_id=BTN_ICON_CANCEL)],
+            [InlineKeyboardButton(text="Нет, вернуться", callback_data=f"admin_product_group:{sample_product_id}:{country_id}", icon_custom_emoji_id=BTN_ICON_BACK)],
+        ]),
+    )
+
+
+@dp.callback_query(F.data.startswith("admin_group_remove_products_go:"))
+async def admin_group_remove_products(query: CallbackQuery):
+    await ensure_known_user(query)
+    if not is_admin(query.from_user.id):
+        return
+    try:
+        _, sample_raw, country_raw = (query.data or "").split(":", 2)
+        sample_product_id = int(sample_raw)
+        country_id = int(country_raw)
+    except (TypeError, ValueError):
+        await query.answer("Отдел не найден.", show_alert=True)
+        return
+    group = await get_product_department(sample_product_id)
+    if not group:
+        await query.answer("Отдел не найден.", show_alert=True)
+        return
+    result = await remove_available_products_in_department(sample_product_id)
+    removed = int(result.get("removed") or 0)
+    if not removed:
+        await query.answer("В отделе больше нет товаров в наличии.", show_alert=True)
+        return
+    await log_purchase(
+        "admin_action",
+        action=(
+            f"Массово сняты с продажи товары отдела: {group['country']} / {group['title']}; "
+            f"товаров: {removed}; из корзин убрано: {int(result.get('cart_removed') or 0)}; "
+            "session-файлы сохранены"
+        ),
+        admin_id=query.from_user.id,
+    )
+    await query.answer(f"Снято с продажи: {removed}.")
+    await safe_edit(
+        query.message,
+        f"{ICON_SUCCESS} <b>Товары сняты с продажи</b>\n\n"
+        f"<b>Отдел:</b> {render_rich_text(group['title'])}\n"
+        f"<b>Удалено из бота:</b> {removed}\n"
+        f"<b>Убрано из корзин:</b> {int(result.get('cart_removed') or 0)}\n\n"
+        "Файлы session, JSON и tdata сохранены на сервере.",
+        InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+            text="К стране",
+            callback_data=f"admin_country:{country_id}",
             icon_custom_emoji_id=BTN_ICON_BACK,
         )]]),
     )

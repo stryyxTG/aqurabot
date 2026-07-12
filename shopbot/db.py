@@ -1805,6 +1805,63 @@ async def remove_product(product_id: int) -> bool:
         return True
 
 
+async def remove_available_products_in_department(sample_product_id: int) -> dict[str, int]:
+    """Remove only available products from a department without touching session files."""
+    async with get_db_conn() as db:
+        await db.execute("BEGIN IMMEDIATE")
+        if sample_product_id < 0:
+            async with db.execute(
+                """
+                SELECT c.name AS country, d.title, d.price
+                FROM catalog_departments d
+                JOIN catalog_countries c ON c.country_id = d.country_id
+                WHERE d.department_id = ? AND d.is_active = 1 AND c.is_active = 1
+                """,
+                (abs(sample_product_id),),
+            ) as cursor:
+                sample = await cursor.fetchone()
+        else:
+            async with db.execute(
+                """
+                SELECT country, title, price
+                FROM products
+                WHERE product_id = ? AND status != 'removed'
+                """,
+                (sample_product_id,),
+            ) as cursor:
+                sample = await cursor.fetchone()
+        if not sample:
+            await db.rollback()
+            return {"removed": 0, "cart_removed": 0}
+
+        async with db.execute(
+            """
+            SELECT product_id
+            FROM products
+            WHERE status = 'available' AND country = ? AND title = ? AND price = ?
+            """,
+            (sample["country"], sample["title"], sample["price"]),
+        ) as cursor:
+            product_ids = [int(row["product_id"]) for row in await cursor.fetchall()]
+        if not product_ids:
+            await db.commit()
+            return {"removed": 0, "cart_removed": 0}
+
+        placeholders = ", ".join("?" for _ in product_ids)
+        cursor = await db.execute(
+            f"DELETE FROM cart_items WHERE product_id IN ({placeholders})",
+            tuple(product_ids),
+        )
+        cart_removed = int(cursor.rowcount or 0)
+        cursor = await db.execute(
+            f"UPDATE products SET status = 'removed' WHERE product_id IN ({placeholders}) AND status = 'available'",
+            tuple(product_ids),
+        )
+        removed = int(cursor.rowcount or 0)
+        await db.commit()
+        return {"removed": removed, "cart_removed": cart_removed}
+
+
 async def force_remove_product(product_id: int) -> bool:
     """Принудительно удалить товар в любом статусе (для снятия застрявших товаров)."""
     async with get_db_conn() as db:
