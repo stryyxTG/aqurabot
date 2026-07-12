@@ -3373,10 +3373,60 @@ async def service_buy(query: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "service_order_cancel")
 async def service_order_cancel(query: CallbackQuery, state: FSMContext):
     await ensure_known_user(query)
-    await query.answer("Отменено.")
+    data = await state.get_data()
+    back_callback = str(data.get("service_back_callback") or "menu_catalog")
     await state.clear()
-    text = f"{ICON_CATALOG_SECTIONS} <b>Каталог</b>\n\nВыберите раздел:"
-    await safe_edit(query.message, text, catalog_sections_keyboard())
+    await query.answer("Отменено.")
+
+    if back_callback.startswith("premium_period:"):
+        try:
+            months = int(back_callback.split(":", 1)[1])
+        except ValueError:
+            months = 0
+        amount = float(PREMIUM_PRICES_RUB.get(months, 0.0))
+        if amount > 0:
+            service_label = premium_service_label(months)
+            balance = await get_balance(query.from_user.id)
+            text = (
+                f"{ICON_TG_PREMIUM} <b>{html.escape(service_label)}</b>\n\n"
+                f"<b>К оплате:</b> {fmt_money(amount)}\n"
+                f"{ICON_COIN} <b>Ваш баланс:</b> {fmt_money(balance)}\n\n"
+                f"{ICON_NOTICE} Выдача по юзернейму. Время выдачи может занять до 30 минут."
+            )
+            await safe_edit(
+                query.message,
+                text,
+                service_detail_kb(f"service_buy:premium:{months}", "catalog_premium"),
+            )
+            return
+    elif back_callback.startswith("stars_package:"):
+        try:
+            quantity = int(back_callback.split(":", 1)[1])
+        except ValueError:
+            quantity = 0
+        if quantity in STARS_PACKAGES:
+            amount = quantity * STARS_RATE_RUB
+            balance = await get_balance(query.from_user.id)
+            text = (
+                f"{ICON_TG_STARS} <b>TStars</b>\n\n"
+                f"<b>Количество:</b> {quantity}\n"
+                f"<b>Курс:</b> 1 {ICON_STAR_RATE} = {STARS_RATE_RUB:.2f} {settings.currency}\n"
+                f"<b>К оплате:</b> {fmt_money(amount)}\n"
+                f"{ICON_COIN} <b>Ваш баланс:</b> {fmt_money(balance)}\n\n"
+                f"{ICON_NOTICE} Выдача по юзернейму. Время выдачи может занять до 30 минут."
+            )
+            await safe_edit(
+                query.message,
+                text,
+                service_detail_kb(f"service_buy:stars:{quantity}", "catalog_stars"),
+            )
+            return
+
+    await safe_edit(
+        query.message,
+        f"{ICON_CATALOG_SECTIONS} <b>Каталог</b>\n\nВыберите раздел:",
+        catalog_sections_keyboard(),
+    )
 
 
 @dp.message(ServiceOrderStates.waiting_recipient)
@@ -5466,14 +5516,14 @@ async def product_buy(query: CallbackQuery):
 
 
 def admin_product_back_callback_from_token(token: str) -> str:
-    if token == "search":
+    if token in {"s", "search"}:
         return "admin_product_search"
-    if token.startswith("sold:"):
+    if token.startswith(("h:", "sold:")):
         try:
             return f"admin_stock_sold_list:{max(0, int(token.split(':', 1)[1]))}"
         except ValueError:
             return "admin_stock_catalog"
-    if token.startswith("group:"):
+    if token.startswith(("g:", "group:")):
         parts = token.split(":")
         if len(parts) == 4:
             try:
@@ -5483,7 +5533,7 @@ def admin_product_back_callback_from_token(token: str) -> str:
             except ValueError:
                 return "admin_stock_catalog"
             return f"admin_product_group:{sample_product_id}:{country_id}:{page}"
-    if token.startswith("country:"):
+    if token.startswith(("c:", "country:")):
         parts = token.split(":")
         if len(parts) == 4:
             try:
@@ -5493,14 +5543,42 @@ def admin_product_back_callback_from_token(token: str) -> str:
             except ValueError:
                 return "admin_stock_catalog"
             return f"admin_stock_country:{country_id}:{page}:{catalog_page}"
+    if token.startswith(("a:", "public_all:")):
+        try:
+            return f"catalog_all_{max(0, int(token.split(':', 1)[1]))}"
+        except ValueError:
+            return "catalog_accounts"
+    if token.startswith(("u:", "public_country:")):
+        parts = token.split(":")
+        if len(parts) == 3:
+            try:
+                country_id = int(parts[1])
+                page = max(0, int(parts[2]))
+            except ValueError:
+                return "catalog_accounts"
+            return f"catalog_country:{country_id}:{page}"
+    if token in {"u", "public_catalog"}:
+        return "catalog_accounts"
     return "admin_stock_catalog"
 
 
 def admin_product_detail_callback_from_token(product_id: int, token: str) -> str:
-    if token == "search":
+    if token in {"s", "search"}:
         return f"admin_stock_product:{product_id}:search"
-    if token.startswith(("sold:", "group:", "country:")):
-        return f"admin_stock_product:{product_id}:{token}"
+    if token.startswith(("g:", "group:")):
+        return f"admin_stock_product:{product_id}:group:{token.split(':', 1)[1]}"
+    if token.startswith(("c:", "country:")):
+        return f"admin_stock_product:{product_id}:country:{token.split(':', 1)[1]}"
+    if token.startswith(("h:", "sold:")):
+        return f"admin_stock_product:{product_id}:sold:{token.split(':', 1)[1]}"
+    if token.startswith(("a:", "public_all:")):
+        return f"product_{product_id}:all:{token.split(':', 1)[1]}"
+    if token.startswith(("u:", "public_country:")):
+        parts = token.split(":")
+        if len(parts) == 3:
+            return f"product_{product_id}:c{parts[1]}:{parts[2]}"
+    if token in {"u", "public_catalog"}:
+        return "catalog_accounts"
     return f"admin_stock_product:{product_id}"
 
 
@@ -5857,7 +5935,7 @@ async def admin_scan_failed_list(query: CallbackQuery, state: FSMContext):
         nav.append(InlineKeyboardButton(text=">", callback_data=f"admin_scan_failed_list:{page + 1}"))
     if nav:
         rows.append(nav)
-    rows.append([InlineKeyboardButton(text="Назад", callback_data="admin_home", icon_custom_emoji_id=BTN_ICON_BACK)])
+    rows.append([InlineKeyboardButton(text="Назад", callback_data="admin_scan_accounts", icon_custom_emoji_id=BTN_ICON_BACK)])
     await safe_edit(
         query.message,
         f"<b>Ошибки сканирования</b>\n\n"
@@ -5986,6 +6064,38 @@ async def admin_product_search_process(message: Message, state: FSMContext):
     )
 
 
+async def render_admin_user_card(message: Message, target_id: int) -> bool:
+    user = await get_user(target_id)
+    if not user:
+        return False
+    text = (
+        "<b>Пользователь</b>\n\n"
+        f"ID: <code>{user['user_id']}</code>\n"
+        f"<b>Ник:</b> @{html.escape(user['username'] or '—')}\n"
+        f"<b>Имя:</b> {html.escape(user['first_name'] or '—')}\n"
+        f"{ICON_COIN} <b>Баланс:</b> {fmt_money(float(user['balance']))}\n"
+        f"<b>Первый вход:</b> {str(user['joined_at'])[:10]}"
+    )
+    await safe_edit(message, text, admin_user_manage_kb(target_id))
+    return True
+
+
+@dp.callback_query(F.data.startswith("admin_user_card:"))
+async def admin_user_card(query: CallbackQuery):
+    await ensure_known_user(query)
+    if not is_admin(query.from_user.id):
+        return
+    try:
+        target_id = int((query.data or "").split(":", 1)[1])
+    except (IndexError, ValueError):
+        await query.answer("Некорректный ID пользователя.", show_alert=True)
+        return
+    if not await render_admin_user_card(query.message, target_id):
+        await query.answer("Пользователь не найден.", show_alert=True)
+        return
+    await query.answer()
+
+
 @dp.callback_query(F.data.startswith("admin_user_purchases:"))
 async def admin_user_purchases_view(query: CallbackQuery):
     if not is_admin(query.from_user.id): return
@@ -6020,9 +6130,9 @@ async def admin_user_purchases_view(query: CallbackQuery):
             )
         ])
     
-    kb.inline_keyboard.append([InlineKeyboardButton(text="Назад", callback_data=f"admin_home", icon_custom_emoji_id=BTN_ICON_BACK)])
+    kb.inline_keyboard.append([InlineKeyboardButton(text="Назад", callback_data=f"admin_user_card:{target_id}", icon_custom_emoji_id=BTN_ICON_BACK)])
     
-    await query.message.answer(text, reply_markup=kb)
+    await safe_edit(query.message, text, kb)
     await query.answer()
 
 
@@ -6091,8 +6201,9 @@ async def admin_purchase_detail_view(query: CallbackQuery):
         f"Цена продажи: <b>{fmt_money(float(product['sold_price'])) if product['sold_price'] else '—'}</b>"
     )
     
-    await query.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Назад к покупкам", callback_data="admin_home", icon_custom_emoji_id=BTN_ICON_BACK)]
+    purchases_back = f"admin_user_purchases:{int(product['sold_to'])}" if product["sold_to"] else "admin_home"
+    await safe_edit(query.message, text, InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Назад к покупкам", callback_data=purchases_back, icon_custom_emoji_id=BTN_ICON_BACK)]
     ]))
     await query.answer()
 
@@ -6103,7 +6214,7 @@ async def admin_user_topup_btn(query: CallbackQuery, state: FSMContext):
     target_id = int(query.data.split(":")[1])
     await state.update_data(target_user_id=target_id, balance_action="topup")
     await state.set_state(AdminTopUpStates.waiting_amount)
-    await safe_edit(query.message, f"<b>{ICON_COIN} Выдача баланса</b>\n\nПользователь: <code>{target_id}</code>\nВведите сумму:", cancel_flow_kb("admin_home"))
+    await safe_edit(query.message, f"<b>{ICON_COIN} Выдача баланса</b>\n\nПользователь: <code>{target_id}</code>\nВведите сумму:", cancel_flow_kb(f"admin_user_card:{target_id}"))
     await query.answer()
 
 
@@ -6121,7 +6232,7 @@ async def admin_user_withdraw_btn(query: CallbackQuery, state: FSMContext):
         f"Пользователь: <code>{target_id}</code>\n"
         f"{ICON_COIN} <b>Текущий баланс:</b> {fmt_money(current_balance)}\n\n"
         "Введите сумму списания:",
-        cancel_flow_kb("admin_home"),
+        cancel_flow_kb(f"admin_user_card:{target_id}"),
     )
     await query.answer()
 
@@ -6162,14 +6273,15 @@ async def admin_user_reset_btn(query: CallbackQuery):
 @dp.callback_query(F.data.startswith("admin_claim_ask:"))
 async def admin_claim_ask(query: CallbackQuery):
     await ensure_known_user(query)
-    await query.answer()
     if not await require_admin(query):
         return
+    parts = (query.data or "").split(":")
     try:
-        product_id = int(query.data.split(":", 1)[1])
-    except Exception:
+        product_id = int(parts[1])
+    except (IndexError, ValueError):
         await query.answer("Некорректный товар.", show_alert=True)
         return
+    back_token = ":".join(parts[2:]) if len(parts) > 2 else "catalog"
     product = await get_product(product_id)
     if not product:
         await query.answer("Товар не найден.", show_alert=True)
@@ -6177,29 +6289,29 @@ async def admin_claim_ask(query: CallbackQuery):
     if product["status"] not in {"available", "waiting_code"}:
         await query.answer("Этот товар уже не в наличии.", show_alert=True)
         return
-    back_callback = "admin_home" if query.data.endswith(":admin") else "admin_stock_product:%s" % product_id
+    await query.answer()
     text = (
         "<b>Подтвердите действие</b>\n\n"
-        f"Забрать товар со склада?\n\n"
+        "Забрать товар со склада?\n\n"
         f"{ICON_PURCHASE_TAG} <b>Товар:</b> {render_rich_text(product['title'])}\n"
         f"<b>Телефон:</b> <code>{html.escape(product['phone'] or '—')}</code>"
     )
-    await safe_edit(query.message, text, admin_claim_confirm_kb(product_id, back_callback))
+    await safe_edit(query.message, text, admin_claim_confirm_kb(product_id, back_token))
 
 
 @dp.callback_query(F.data.startswith("admin_claim:"))
 async def admin_claim_product(query: CallbackQuery):
     await ensure_known_user(query)
-    await query.answer()
     if not await require_admin(query):
         return
+    parts = (query.data or "").split(":")
     try:
-        parts = query.data.split(":", 2)
         product_id = int(parts[1])
-        back_callback = parts[2] if len(parts) > 2 else "admin_home"
-    except Exception:
+    except (IndexError, ValueError):
         await query.answer("Некорректный товар.", show_alert=True)
         return
+    back_token = ":".join(parts[2:]) if len(parts) > 2 else "catalog"
+    back_callback = admin_product_back_callback_from_token(back_token)
     product = await get_product(product_id)
     if not product:
         await query.answer("Товар не найден.", show_alert=True)
@@ -6210,9 +6322,26 @@ async def admin_claim_product(query: CallbackQuery):
     if not await claim_product_for_admin(query.from_user.id, product_id):
         await query.answer("Не удалось забрать товар.", show_alert=True)
         return
+    await query.answer("Товар забран со склада.")
     product = await get_product(product_id)
-    await log_purchase("admin_action", action=f"Админ забрал товар #{product_id} ({product['phone']})", admin_id=query.from_user.id)
-    await safe_edit(query.message, "Товар забран со склада.\n\n" + product_admin_text(product), back_to_main_kb(True))
+    await log_purchase(
+        "admin_action",
+        action=f"Админ забрал товар #{product_id} ({product['phone']})",
+        admin_id=query.from_user.id,
+    )
+    has_session = has_server_session(product)
+    await safe_edit(
+        query.message,
+        "Товар забран со склада.\n\n" + product_admin_text(product),
+        admin_product_detail_kb(
+            product_id,
+            back_callback=back_callback,
+            can_terminate_sessions=has_session,
+            can_fetch_code=has_session,
+            can_claim=False,
+        ),
+    )
+
 
 @dp.callback_query(F.data == "admin_home")
 async def admin_home(query: CallbackQuery):
@@ -7954,13 +8083,16 @@ async def admin_get_code(query: CallbackQuery):
     )
 
 
+@dp.callback_query(F.data.startswith("ats_ask:"))
 @dp.callback_query(F.data.startswith("admin_terminate_sessions_ask:"))
 async def admin_terminate_sessions_ask(query: CallbackQuery):
     await ensure_known_user(query)
     await query.answer()
     if not is_admin(query.from_user.id):
         return
-    product_id = int(query.data.split(":", 1)[1])
+    parts = (query.data or "").split(":")
+    product_id = int(parts[1])
+    back_token = ":".join(parts[2:]) if len(parts) > 2 else "catalog"
     product = await get_product(product_id)
     if not product:
         await query.answer("Товар не найден.", show_alert=True)
@@ -7975,7 +8107,7 @@ async def admin_terminate_sessions_ask(query: CallbackQuery):
         "Бот завершит все активные с3ccuu этого товара, кроме своей серверной с3ccuu.\n\n"
         f"{ICON_NOTICE} Это действие нельзя отменить."
     )
-    await safe_edit(query.message, text, admin_terminate_sessions_step1_kb(product_id))
+    await safe_edit(query.message, text, admin_terminate_sessions_step1_kb(product_id, back_token))
 
 
 @dp.callback_query(F.data.startswith("admin_terminate_sessions_step2:"))
@@ -7984,7 +8116,9 @@ async def admin_terminate_sessions_step2(query: CallbackQuery):
     await query.answer()
     if not is_admin(query.from_user.id):
         return
-    product_id = int(query.data.split(":", 1)[1])
+    parts = (query.data or "").split(":")
+    product_id = int(parts[1])
+    back_token = ":".join(parts[2:]) if len(parts) > 2 else "catalog"
     product = await get_product(product_id)
     if not product:
         await query.answer("Товар не найден.", show_alert=True)
@@ -7994,16 +8128,20 @@ async def admin_terminate_sessions_step2(query: CallbackQuery):
         f"Вы точно хотите завершить все чужие сессии у товара <code>#{product_id}</code>?\n\n"
         f"{ICON_NOTICE} Бот сохранит свою сессию и не будет удалять её автоочисткой."
     )
-    await safe_edit(query.message, text, admin_terminate_sessions_step2_kb(product_id))
+    await safe_edit(query.message, text, admin_terminate_sessions_step2_kb(product_id, back_token))
 
 
+@dp.callback_query(F.data.startswith("ats_confirm:"))
 @dp.callback_query(F.data.startswith("admin_terminate_sessions_confirm:"))
 async def admin_terminate_sessions_confirm(query: CallbackQuery):
     await ensure_known_user(query)
     await query.answer("Завершаю сессии...")
     if not is_admin(query.from_user.id):
         return
-    product_id = int(query.data.split(":", 1)[1])
+    parts = (query.data or "").split(":")
+    product_id = int(parts[1])
+    back_token = ":".join(parts[2:]) if len(parts) > 2 else "catalog"
+    back_callback = admin_product_back_callback_from_token(back_token)
     product = await get_product(product_id)
     if not product:
         await query.answer("Товар не найден.", show_alert=True)
@@ -8025,7 +8163,7 @@ async def admin_terminate_sessions_confirm(query: CallbackQuery):
             f"<code>{html.escape(str(result.get('error') or 'Unknown error'))}</code>",
             admin_product_detail_kb(
                 product_id,
-                back_callback=f"admin_stock_product:{product_id}",
+                back_callback=back_callback,
                 can_terminate_sessions=has_server_session(product),
                 can_fetch_code=has_server_session(product),
                 can_claim=product["status"] in {"available", "waiting_code"},
@@ -8057,7 +8195,7 @@ async def admin_terminate_sessions_confirm(query: CallbackQuery):
         text,
         admin_product_detail_kb(
             product_id,
-            back_callback=f"admin_stock_product:{product_id}",
+            back_callback=back_callback,
             can_terminate_sessions=has_server_session(product),
             can_fetch_code=has_server_session(product),
             can_claim=product["status"] in {"available", "waiting_code"},
@@ -9486,6 +9624,14 @@ async def cancel_flow(query: CallbackQuery, state: FSMContext):
             await safe_edit(query.message, text, await build_admin_catalog_keyboard(user_id=query.from_user.id))
         else:
             await render_admin_country(query.message, country_id)
+    elif back_callback.startswith("admin_user_card:"):
+        try:
+            target_id = int(back_callback.split(":", 1)[1])
+        except ValueError:
+            await safe_edit(query.message, "<b>Админка</b>", admin_home_kb())
+        else:
+            if not await render_admin_user_card(query.message, target_id):
+                await safe_edit(query.message, "<b>Админка</b>", admin_home_kb())
     elif back_callback == "admin_proxy":
         await safe_edit(query.message, build_proxy_text(), proxy_menu_kb(bool(load_global_proxy())))
     elif back_callback == "admin_scan_accounts":

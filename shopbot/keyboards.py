@@ -386,7 +386,8 @@ def product_list_kb(
 def product_detail_kb(product_id: int, *, can_buy: bool, back_callback: str, can_claim: bool = False) -> InlineKeyboardMarkup:
     rows = []
     if can_claim:
-        rows.append([InlineKeyboardButton(text="Забрать товар", callback_data=f"admin_claim_ask:{product_id}")])
+        claim_token = admin_product_back_token(back_callback)
+        rows.append([InlineKeyboardButton(text="??????? ?????", callback_data=f"admin_claim_ask:{product_id}:{claim_token}")])
     if can_buy:
         rows.append([InlineKeyboardButton(text="Купить", callback_data=f"buy_{product_id}")])
         rows.append([InlineKeyboardButton(text="Добавить в корзину", callback_data=f"cart_add:{product_id}")])
@@ -654,9 +655,9 @@ def admin_stock_list_kb(product_rows: list[list[InlineKeyboardButton]], *, page:
         nav.append(InlineKeyboardButton(text=">", callback_data=f"{prefix}_{page+1}"))
     rows.append(nav)
     if status == "available":
-        rows.append([InlineKeyboardButton(text="Проданные", callback_data="admin_stock_sold_0")])
+        rows.append([InlineKeyboardButton(text="Проданные", callback_data="admin_stock_sold_list")])
     else:
-        rows.append([InlineKeyboardButton(text="Доступные", callback_data="admin_stock_available_0")])
+        rows.append([InlineKeyboardButton(text="Доступные", callback_data="admin_stock_catalog")])
     rows.append([InlineKeyboardButton(text="Назад", callback_data="admin_home", icon_custom_emoji_id=BTN_ICON_BACK)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -821,11 +822,11 @@ def admin_product_detail_kb(
         ],
     ]
     if can_claim:
-        rows.append([InlineKeyboardButton(text="Забрать со склада", callback_data=f"admin_claim_ask:{product_id}")])
+        rows.append([InlineKeyboardButton(text="Забрать со склада", callback_data=f"admin_claim_ask:{product_id}:{verify_back_token}")])
     if can_fetch_code:
         rows.append([InlineKeyboardButton(text="Получить к0d", callback_data=f"admin_get_code:{product_id}:{verify_back_token}", icon_custom_emoji_id=BTN_ICON_CHECK)])
     if can_terminate_sessions:
-        rows.append([InlineKeyboardButton(text="Завершить с3ccuu", callback_data=f"admin_terminate_sessions_ask:{product_id}", icon_custom_emoji_id=BTN_ICON_CANCEL)])
+        rows.append([InlineKeyboardButton(text="Завершить с3ccuu", callback_data=f"ats_ask:{product_id}:{verify_back_token}", icon_custom_emoji_id=BTN_ICON_CANCEL)])
     rows.append([InlineKeyboardButton(text="Удалить товар", callback_data=f"admin_remove:{product_id}:{verify_back_token}", icon_custom_emoji_id=BTN_ICON_CANCEL)])
     rows.append([InlineKeyboardButton(text="Назад", callback_data=back_callback, icon_custom_emoji_id=BTN_ICON_BACK)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -833,14 +834,20 @@ def admin_product_detail_kb(
 
 def admin_product_back_token(back_callback: str) -> str:
     if back_callback == "admin_product_search":
-        return "search"
+        return "s"
     if back_callback.startswith("admin_stock_sold_list:"):
-        return "sold:" + back_callback.split(":", 1)[1]
+        return "h:" + back_callback.split(":", 1)[1]
     if back_callback.startswith("admin_product_group:"):
-        return "group:" + back_callback.split(":", 1)[1]
+        return "g:" + back_callback.split(":", 1)[1]
     if back_callback.startswith("admin_stock_country:"):
-        return "country:" + back_callback.split(":", 1)[1]
-    return "catalog"
+        return "c:" + back_callback.split(":", 1)[1]
+    if back_callback.startswith("catalog_all_"):
+        return "a:" + back_callback.rsplit("_", 1)[1]
+    if back_callback.startswith("catalog_country:"):
+        return "u:" + back_callback.split(":", 1)[1]
+    if back_callback == "catalog_accounts":
+        return "u"
+    return "x"
 
 
 def admin_product_search_results_kb(product_rows: list[list[InlineKeyboardButton]]) -> InlineKeyboardMarkup:
@@ -850,29 +857,55 @@ def admin_product_search_results_kb(product_rows: list[list[InlineKeyboardButton
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def admin_terminate_sessions_step1_kb(product_id: int) -> InlineKeyboardMarkup:
+def admin_product_detail_callback_for_token(product_id: int, token: str) -> str:
+    if token in {"s", "search"}:
+        return f"admin_stock_product:{product_id}:search"
+    if token.startswith(("g:", "group:")):
+        payload = token.split(":", 1)[1]
+        return f"admin_stock_product:{product_id}:group:{payload}"
+    if token.startswith(("c:", "country:")):
+        payload = token.split(":", 1)[1]
+        return f"admin_stock_product:{product_id}:country:{payload}"
+    if token.startswith(("h:", "sold:")):
+        payload = token.split(":", 1)[1]
+        return f"admin_stock_product:{product_id}:sold:{payload}"
+    if token.startswith(("a:", "public_all:")):
+        return f"product_{product_id}:all:{token.split(':', 1)[1]}"
+    if token.startswith(("u:", "public_country:")):
+        parts = token.split(":")
+        if len(parts) == 3:
+            return f"product_{product_id}:c{parts[1]}:{parts[2]}"
+    if token in {"u", "public_catalog"}:
+        return "catalog_accounts"
+    return f"admin_stock_product:{product_id}"
+
+
+def admin_terminate_sessions_step1_kb(product_id: int, back_token: str) -> InlineKeyboardMarkup:
+    detail_callback = admin_product_detail_callback_for_token(product_id, back_token)
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Да, завершить", callback_data=f"admin_terminate_sessions_confirm:{product_id}", icon_custom_emoji_id=BTN_ICON_CANCEL)],
-            [InlineKeyboardButton(text="Нет", callback_data=f"admin_stock_product:{product_id}", icon_custom_emoji_id=BTN_ICON_BACK)],
+            [InlineKeyboardButton(text="Да, завершить", callback_data=f"ats_confirm:{product_id}:{back_token}", icon_custom_emoji_id=BTN_ICON_CANCEL)],
+            [InlineKeyboardButton(text="Нет", callback_data=detail_callback, icon_custom_emoji_id=BTN_ICON_BACK)],
         ]
     )
 
 
-def admin_terminate_sessions_step2_kb(product_id: int) -> InlineKeyboardMarkup:
+def admin_terminate_sessions_step2_kb(product_id: int, back_token: str) -> InlineKeyboardMarkup:
+    detail_callback = admin_product_detail_callback_for_token(product_id, back_token)
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Да, завершить", callback_data=f"admin_terminate_sessions_confirm:{product_id}", icon_custom_emoji_id=BTN_ICON_CANCEL)],
-            [InlineKeyboardButton(text="Нет", callback_data=f"admin_stock_product:{product_id}", icon_custom_emoji_id=BTN_ICON_BACK)],
+            [InlineKeyboardButton(text="Да, завершить", callback_data=f"ats_confirm:{product_id}:{back_token}", icon_custom_emoji_id=BTN_ICON_CANCEL)],
+            [InlineKeyboardButton(text="Нет", callback_data=detail_callback, icon_custom_emoji_id=BTN_ICON_BACK)],
         ]
     )
 
 
-def admin_claim_confirm_kb(product_id: int, back_callback: str) -> InlineKeyboardMarkup:
+def admin_claim_confirm_kb(product_id: int, back_token: str) -> InlineKeyboardMarkup:
+    detail_callback = admin_product_detail_callback_for_token(product_id, back_token)
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Да, забрать", callback_data=f"admin_claim:{product_id}:{back_callback}", icon_custom_emoji_id=BTN_ICON_CHECK)],
-            [InlineKeyboardButton(text="Нет", callback_data=back_callback, icon_custom_emoji_id=BTN_ICON_BACK)],
+            [InlineKeyboardButton(text="Да, забрать", callback_data=f"admin_claim:{product_id}:{back_token}", icon_custom_emoji_id=BTN_ICON_CHECK)],
+            [InlineKeyboardButton(text="Нет", callback_data=detail_callback, icon_custom_emoji_id=BTN_ICON_BACK)],
         ]
     )
 
