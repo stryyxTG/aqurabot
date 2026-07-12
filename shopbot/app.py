@@ -8903,13 +8903,20 @@ async def admin_add_bulk_sessions(message: Message, state: FSMContext):
             imported = 0
             json_count = 0
             matched = 0
+            skipped_tdata = 0
+            skipped_exact_duplicates = 0
             errors = []
             json_lookup = dict(pending_metadata)
+            known_hashes = set(bulk_hashes)
             with zipfile.ZipFile(io.BytesIO(content)) as archive:
                 members = [item for item in archive.infolist() if not item.is_dir()]
                 session_members = []
                 json_entries = []
                 for item in members:
+                    path_parts = [part.casefold() for part in item.filename.replace("\\", "/").split("/") if part]
+                    if "tdata" in path_parts:
+                        skipped_tdata += 1
+                        continue
                     inner_name = Path(item.filename).name
                     if not inner_name:
                         continue
@@ -8929,6 +8936,9 @@ async def admin_add_bulk_sessions(message: Message, state: FSMContext):
                     try:
                         session_bytes = archive.read(item)
                         file_hash = session_file_sha256(session_bytes)
+                        if file_hash in known_hashes:
+                            skipped_exact_duplicates += 1
+                            continue
                         session_path = unique_uploaded_session_path("bulk", file_hash, inner_name)
                         with open(session_path, "wb") as f:
                             f.write(session_bytes)
@@ -8943,6 +8953,7 @@ async def admin_add_bulk_sessions(message: Message, state: FSMContext):
                             matched += 1
                         bulk_sessions.append(str(session_path))
                         bulk_hashes.append(file_hash)
+                        known_hashes.add(file_hash)
                         bulk_session_names[str(session_path)] = inner_name
                         imported += 1
                     except Exception as exc:
@@ -8962,6 +8973,10 @@ async def admin_add_bulk_sessions(message: Message, state: FSMContext):
                 f"JSON применено: <b>{matched}</b>\n"
                 f"Всего в пачке: <b>{len(bulk_sessions)}</b>"
             )
+            if skipped_tdata:
+                text += f"\nПропущено файлов tdata: <b>{skipped_tdata}</b>"
+            if skipped_exact_duplicates:
+                text += f"\nПропущено точных копий session: <b>{skipped_exact_duplicates}</b>"
             if errors:
                 text += "\n\nОшибки:\n" + "\n".join(f"  • {html.escape(error)}" for error in errors[:5])
                 if len(errors) > 5:
@@ -8977,6 +8992,16 @@ async def admin_add_bulk_sessions(message: Message, state: FSMContext):
 
         session_bytes = content
         file_hash = session_file_sha256(session_bytes)
+        if file_hash in set(bulk_hashes):
+            await message.answer(
+                "Эта session уже есть в текущей пачке и пропущена.\n\n"
+                f"Всего сессий: <b>{len(bulk_sessions)}</b>",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="Готово", callback_data="bulk_sessions_done")],
+                    [InlineKeyboardButton(text="Отменить", callback_data="cancel_flow:admin_home", icon_custom_emoji_id=BTN_ICON_CANCEL)],
+                ]),
+            )
+            return
 
         session_path = unique_uploaded_session_path("bulk", file_hash, file_name)
         with open(session_path, "wb") as f:
