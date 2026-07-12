@@ -7461,9 +7461,9 @@ async def admin_stock_country(query: CallbackQuery):
     
     rows = []
     for product in products:
-        phone = product["phone"] or f"Товар #{product['product_id']}"
+        phone = product["phone"] or "не указан"
         rows.append([InlineKeyboardButton(
-            text=f"{phone} • {fmt_money(float(product['price']))}",
+            text=f"#{product['product_id']} • {phone}",
             callback_data=f"admin_stock_product:{product['product_id']}:country:{country_id}:{page}:{catalog_page}"
         )])
     
