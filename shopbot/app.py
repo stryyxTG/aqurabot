@@ -1257,7 +1257,7 @@ def clean_stats_text(result: dict) -> str:
         f"missing_files : {result['missing_files']}\n"
         f"unsafe_paths  : {result['unsafe_paths']}\n"
         f"server_size   : {result['server_size'] / 1024 / 1024:.2f} MB\n"
-        "product_logout: enabled</code></pre>"
+        "product_logout: disabled</code></pre>"
     )
 
 
@@ -1283,6 +1283,48 @@ def remove_clean_session_files(session_path: str) -> tuple[bool, int, int]:
             logger.exception("Could not remove sold session file: %s", path)
             return False, removed, removed_size
     return True, removed, removed_size
+
+
+async def remove_product_files_without_logout(
+    product: object,
+    *,
+    removing_product_ids: set[int] | None = None,
+) -> tuple[str, int, int]:
+    """Remove local product files while leaving the Telegram authorization intact."""
+    product_id = int(product["product_id"])
+    session_path = (product["session_path"] or "").strip()
+    if not session_path or session_path == "pending":
+        return "no_files", 0, 0
+
+    try:
+        primary = clean_primary_session_path(session_path)
+    except (OSError, RuntimeError, ValueError):
+        logger.warning("Unsafe session path for product cleanup | product=%s | path=%r", product_id, session_path)
+        return "failed", 0, 0
+
+    removing_product_ids = removing_product_ids or {product_id}
+    for reference in await list_product_session_references():
+        reference_product_id = int(reference["product_id"])
+        if reference_product_id in removing_product_ids or reference["status"] in {"sold", "removed"}:
+            continue
+        try:
+            if clean_primary_session_path(reference["session_path"]) == primary:
+                logger.info(
+                    "Product files kept because an active product still references them | product=%s | referenced_by=%s",
+                    product_id,
+                    reference_product_id,
+                )
+                return "shared", 0, 0
+        except (OSError, RuntimeError, ValueError):
+            continue
+
+    files_ok, removed_count, removed_size = remove_clean_session_files(session_path)
+    if not files_ok:
+        logger.error("Could not remove local product files | product=%s | path=%s", product_id, session_path)
+        return "failed", removed_count, removed_size
+
+    await update_product_session_path(product_id, "")
+    return "removed", removed_count, removed_size
 
 
 def session_file_sha256(content: bytes) -> str:
@@ -2837,8 +2879,8 @@ async def clean_confirm(query: CallbackQuery, state: FSMContext):
         query.message,
         f"{clean_stats_text(result)}\n\n"
         "<b>Подтвердите ручную очистку</b>\n\n"
-        "Бот подключится к серверным сессиям проданных товаров и завершит их Telegram-сессии.\n"
-        "Будут удалены session-файлы.\n"
+        "Будут удалены локальные session- и JSON-файлы проданных товаров.\n"
+        "Telegram-сессии не завершаются и авторизация аккаунтов сохраняется.\n"
         "Товар будет полностью удалён из базы.\n"
         "Удалится связанная история покупки.\n"
         "Восстановление через бота невозможно.",
@@ -2869,7 +2911,7 @@ async def clean_execute(query: CallbackQuery, state: FSMContext):
     await safe_edit(
         query.message,
         "<b>Очистка проданных сессий...</b>\n\n"
-        "Подключаюсь только к проданным товарам, завершаю их Telegram-сессии и удаляю серверные файлы.",
+        "Удаляю локальные файлы только проданных товаров. Telegram-сессии не завершаются.",
     )
 
     result = await scan_sold_sessions_for_clean()
@@ -2911,13 +2953,6 @@ async def clean_execute(query: CallbackQuery, state: FSMContext):
                 logger.warning("Could not stat sold session file before cleanup: %s", path)
         expected_removed_count = len(existing_files)
 
-        try:
-            await session_manager.logout_and_delete_product_session(product_id)
-        except Exception:
-            failed += 1
-            logger.exception("Could not logout and delete sold product session #%s", product_id)
-            continue
-
         files_ok, removed_count, removed_size = remove_clean_session_files(session_path)
         if not files_ok:
             failed += 1
@@ -2925,6 +2960,7 @@ async def clean_execute(query: CallbackQuery, state: FSMContext):
 
         deleted_files += max(removed_count, expected_removed_count)
         deleted_size += max(removed_size, expected_removed_size)
+        await update_product_session_path(product_id, "")
 
         try:
             delete_result = await delete_sold_product_with_history(product_id, session_path, allow_session_cleared=True)
@@ -2944,7 +2980,7 @@ async def clean_execute(query: CallbackQuery, state: FSMContext):
         f"<b>Удалено файлов:</b> {deleted_files}\n"
         f"<b>Освобождено:</b> {human_size(deleted_size)}\n"
         f"<b>Ошибок:</b> {failed}\n\n"
-        "Logout выполнен только для проданных товаров, попавших в безопасную очистку."
+        "Telegram logout не выполнялся: удалены только локальные файлы с сервера."
     )
     await render_clean_menu(query.message, state, edit=True, notice=report)
 
@@ -7169,7 +7205,8 @@ async def admin_group_remove_products_ask(query: CallbackQuery):
         f"<b>Отдел:</b> {render_rich_text(group['title'])}\n"
         f"{ICON_COUNTRY} <b>Страна:</b> {html.escape(str(group['country']))}\n"
         f"<b>Будет снято с продажи:</b> {available_count}\n\n"
-        "Файлы session, JSON и tdata останутся на сервере. Проданные товары и историю покупок бот не затронет.",
+        "Локальные session и JSON будут удалены с сервера без выхода из Telegram. "
+        "Проданные товары и историю покупок бот не затронет.",
         InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="Продолжить удаление", callback_data=f"admin_group_remove_products_step2:{sample_product_id}:{country_id}", icon_custom_emoji_id=BTN_ICON_CANCEL)],
             [InlineKeyboardButton(text="Нет, вернуться", callback_data=f"admin_product_group:{sample_product_id}:{country_id}", icon_custom_emoji_id=BTN_ICON_BACK)],
@@ -7199,7 +7236,8 @@ async def admin_group_remove_products_final_ask(query: CallbackQuery):
         query.message,
         "<b>Финальное подтверждение</b>\n\n"
         f"Снять с продажи все товары отдела: <b>{available_count}</b> шт.\n\n"
-        f"{ICON_NOTICE} Товары исчезнут из бота, но их session, JSON и tdata сохранятся на сервере.",
+        f"{ICON_NOTICE} Товары исчезнут из бота, а их локальные session и JSON будут удалены с сервера. "
+        "Telegram-сессии не завершаются.",
         InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="Да, удалить товары", callback_data=f"admin_group_remove_products_go:{sample_product_id}:{country_id}", icon_custom_emoji_id=BTN_ICON_CANCEL)],
             [InlineKeyboardButton(text="Нет, вернуться", callback_data=f"admin_product_group:{sample_product_id}:{country_id}", icon_custom_emoji_id=BTN_ICON_BACK)],
@@ -7223,6 +7261,47 @@ async def admin_group_remove_products(query: CallbackQuery):
     if not group:
         await query.answer("Отдел не найден.", show_alert=True)
         return
+    available_count = await count_available_products_in_department(sample_product_id)
+    products = await list_available_products_in_department(sample_product_id, limit=available_count)
+    removing_product_ids = {int(product["product_id"]) for product in products}
+    cleaned_files = 0
+    cleaned_size = 0
+    shared_files = 0
+    failed_products: list[int] = []
+    for product in products:
+        cleanup_state, removed_count, removed_size = await remove_product_files_without_logout(
+            product,
+            removing_product_ids=removing_product_ids,
+        )
+        if cleanup_state == "failed":
+            failed_products.append(int(product["product_id"]))
+            continue
+        cleaned_files += removed_count
+        cleaned_size += removed_size
+        if cleanup_state == "shared":
+            shared_files += 1
+
+    if failed_products:
+        logger.error(
+            "Department removal stopped because local files could not be cleaned | department=%s | products=%s",
+            sample_product_id,
+            failed_products,
+        )
+        await query.answer("Не удалось безопасно очистить файлы товаров.", show_alert=True)
+        await safe_edit(
+            query.message,
+            "<b>Удаление не выполнено</b>\n\n"
+            "Не удалось удалить локальные файлы следующих товаров: "
+            f"<code>{', '.join(map(str, failed_products))}</code>.\n\n"
+            "Товары остались в каталоге. Повторите попытку после проверки прав доступа к папке сессий.",
+            InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+                text="Назад к отделу",
+                callback_data=f"admin_product_group:{sample_product_id}:{country_id}",
+                icon_custom_emoji_id=BTN_ICON_BACK,
+            )]]),
+        )
+        return
+
     result = await remove_available_products_in_department(sample_product_id)
     removed = int(result.get("removed") or 0)
     if not removed:
@@ -7233,7 +7312,7 @@ async def admin_group_remove_products(query: CallbackQuery):
         action=(
             f"Массово сняты с продажи товары отдела: {group['country']} / {group['title']}; "
             f"товаров: {removed}; из корзин убрано: {int(result.get('cart_removed') or 0)}; "
-            "session-файлы сохранены"
+            f"локальных файлов удалено: {cleaned_files}; Telegram logout не выполнялся"
         ),
         admin_id=query.from_user.id,
     )
@@ -7243,8 +7322,10 @@ async def admin_group_remove_products(query: CallbackQuery):
         f"{ICON_SUCCESS} <b>Товары сняты с продажи</b>\n\n"
         f"<b>Отдел:</b> {render_rich_text(group['title'])}\n"
         f"<b>Удалено из бота:</b> {removed}\n"
-        f"<b>Убрано из корзин:</b> {int(result.get('cart_removed') or 0)}\n\n"
-        "Файлы session, JSON и tdata сохранены на сервере.",
+        f"<b>Убрано из корзин:</b> {int(result.get('cart_removed') or 0)}\n"
+        f"<b>Удалено файлов:</b> {cleaned_files} ({human_size(cleaned_size)})\n"
+        f"<b>Общие файлы сохранены:</b> {shared_files}\n\n"
+        "Telegram-сессии не завершались.",
         InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
             text="К стране",
             callback_data=f"admin_country:{country_id}",
@@ -8570,8 +8651,23 @@ async def admin_stuck_remove(query: CallbackQuery):
     if not is_admin(query.from_user.id):
         return
     product_id = int((query.data or "").split(":", 1)[1])
+    product = await get_product(product_id)
+    if not product:
+        await query.answer("Товар не найден.", show_alert=True)
+        return
+    cleanup_state, removed_files, _ = await remove_product_files_without_logout(product)
+    if cleanup_state == "failed":
+        await query.answer("Не удалось очистить локальные файлы товара.", show_alert=True)
+        return
     if await force_remove_product(product_id):
-        await log_purchase("admin_action", action=f"Застрявший товар #{product_id} удалён без возврата после двойного подтверждения", admin_id=query.from_user.id)
+        await log_purchase(
+            "admin_action",
+            action=(
+                f"Застрявший товар #{product_id} удалён без возврата после двойного подтверждения; "
+                f"локальных файлов удалено: {removed_files}; Telegram logout не выполнялся"
+            ),
+            admin_id=query.from_user.id,
+        )
         await admin_stuck_products(query)
     else:
         await query.answer("Не удалось удалить товар.", show_alert=True)
@@ -8617,7 +8713,7 @@ async def admin_remove_ask(query: CallbackQuery):
         return
     await query.answer()
     sold_warning = (
-        "\n\nБудут удалены история покупки и серверная session."
+        "\n\nБудут удалены история покупки и локальные session/JSON с сервера без выхода из Telegram."
         if product["status"] == "sold"
         else "\n\nТовар будет снят с продажи и удалён со склада."
     )
@@ -8673,20 +8769,32 @@ async def admin_remove(query: CallbackQuery):
         await safe_edit(query.message, "<b>Товар уже отсутствует</b>", admin_post_remove_kb(back_callback))
         return
 
+    cleanup_state, removed_files, _ = await remove_product_files_without_logout(product)
+    if cleanup_state == "failed":
+        await query.answer("Не удалось очистить локальные файлы товара.", show_alert=True)
+        await safe_edit(
+            query.message,
+            "<b>Удаление не выполнено</b>\n\n"
+            "Серверные файлы товара не удалось очистить. Товар оставлен без изменений.",
+            admin_product_remove_confirm_kb(product_id, token, final=True),
+        )
+        return
+
     if product["status"] == "sold":
         session_path = (product["session_path"] or "").strip()
-        if session_path:
-            await session_manager.logout_and_delete_product_session(product_id)
         delete_result = await delete_sold_product_with_history(
             product_id,
             session_path,
-            allow_session_cleared=True,
+            allow_session_cleared=cleanup_state == "removed",
         )
         if delete_result == "deleted":
             await query.answer("Проданный товар удалён.")
             await log_purchase(
                 "admin_action",
-                action=f"Проданный товар #{product_id} удалён после двойного подтверждения",
+                action=(
+                    f"Проданный товар #{product_id} удалён после двойного подтверждения; "
+                    f"локальных файлов удалено: {removed_files}; Telegram logout не выполнялся"
+                ),
                 admin_id=query.from_user.id,
             )
             await safe_edit(query.message, f"<b>Товар #{product_id} удалён.</b>", admin_post_remove_kb(back_callback))
@@ -8697,11 +8805,25 @@ async def admin_remove(query: CallbackQuery):
     removed = False
     if await remove_product(product_id):
         await query.answer("Товар снят с продажи.")
-        await log_purchase("admin_action", action=f"Товар #{product_id} снят с продажи после двойного подтверждения", admin_id=query.from_user.id)
+        await log_purchase(
+            "admin_action",
+            action=(
+                f"Товар #{product_id} снят с продажи после двойного подтверждения; "
+                f"локальных файлов удалено: {removed_files}; Telegram logout не выполнялся"
+            ),
+            admin_id=query.from_user.id,
+        )
         removed = True
     elif await force_remove_product(product_id):
         await query.answer("Товар удалён.")
-        await log_purchase("admin_action", action=f"Товар #{product_id} принудительно удалён после двойного подтверждения", admin_id=query.from_user.id)
+        await log_purchase(
+            "admin_action",
+            action=(
+                f"Товар #{product_id} принудительно удалён после двойного подтверждения; "
+                f"локальных файлов удалено: {removed_files}; Telegram logout не выполнялся"
+            ),
+            admin_id=query.from_user.id,
+        )
         removed = True
     else:
         await query.answer("Товар не найден.", show_alert=True)
