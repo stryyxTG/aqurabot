@@ -42,10 +42,6 @@ class AdminCatalogStates(StatesGroup):
     waiting_department_description = State()
     waiting_department_extra_code = State()
 
-class AdminEditProductStates(StatesGroup):
-    waiting_new_value = State()
-
-
 class AdminEditProductGroupStates(StatesGroup):
     waiting_new_value = State()
 

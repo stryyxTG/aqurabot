@@ -196,7 +196,7 @@ from .session_metadata import (
     write_original_session_json,
     write_session_metadata,
 )
-from .states import AdminAddProductStates, AdminBroadcastStates, AdminCardsStates, AdminCatalogStates, AdminCleanStates, AdminProxyStates, AdminTopUpStates, AdminEditProductStates, AdminEditProductGroupStates, AdminSearchUserStates, AdminSearchProductStates, AdminStockStates, AdminDropsStates, UserTopUpStates, UserCartStates, UserCatalogStates, ServiceOrderStates, AdminScanStates
+from .states import AdminAddProductStates, AdminBroadcastStates, AdminCardsStates, AdminCatalogStates, AdminCleanStates, AdminProxyStates, AdminTopUpStates, AdminEditProductGroupStates, AdminSearchUserStates, AdminSearchProductStates, AdminStockStates, AdminDropsStates, UserTopUpStates, UserCartStates, UserCatalogStates, ServiceOrderStates, AdminScanStates
 
 
 configure_logging()
@@ -7531,57 +7531,25 @@ async def admin_stock_sold_list(query: CallbackQuery):
 @dp.callback_query(F.data.startswith("admin_edit_product:"))
 async def admin_edit_product_choice(query: CallbackQuery, state: FSMContext):
     await ensure_known_user(query)
-    if not is_admin(query.from_user.id): return
-    product_id = int(query.data.split(":")[1])
-    await state.update_data(edit_product_id=product_id)
-    
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Название", callback_data="edit_field:title")],
-        [InlineKeyboardButton(text="Цена", callback_data="edit_field:price")],
-        [InlineKeyboardButton(text="Описание", callback_data="edit_field:description")],
-        [InlineKeyboardButton(text="Доп. к0d/заметка", callback_data="edit_field:extra_code")],
-        [InlineKeyboardButton(text="Отменить", callback_data=f"admin_stock_product:{product_id}", icon_custom_emoji_id=BTN_ICON_CANCEL)]
-    ])
-    await safe_edit(query.message, "<b>Что редактируем?</b>", kb)
+    if not is_admin(query.from_user.id):
+        return
+    await state.clear()
+    await query.answer(
+        "Название, цена, описание и заметка редактируются в отделе.",
+        show_alert=True,
+    )
 
 
 @dp.callback_query(F.data.startswith("edit_field:"))
 async def admin_edit_field_start(query: CallbackQuery, state: FSMContext):
-    field = query.data.split(":")[1]
-    await state.update_data(edit_field=field)
-    await state.set_state(AdminEditProductStates.waiting_new_value)
-    
-    prompts = {
-        "title": "Введите новое название:",
-        "price": "Введите новую цену:",
-        "description": "Введите новое описание (или - для удаления):",
-        "extra_code": "Введите новую заметку/к0d (или - для удаления):"
-    }
-    await safe_edit(query.message, prompts[field], cancel_flow_kb("admin_home"))
-
-
-@dp.message(AdminEditProductStates.waiting_new_value)
-async def admin_edit_field_finish(message: Message, state: FSMContext):
-    data = await state.get_data()
-    product_id = data["edit_product_id"]
-    field = data["edit_field"]
-    val = message.text.strip()
-    
-    update_data = {}
-    if field == "price":
-        f_val = parse_float(val)
-        if f_val is None:
-            await message.answer("Введите число.")
-            return
-        update_data["price"] = f_val
-    else:
-        update_data[field] = "" if val == "-" else val
-
-    await update_product_info(product_id, **update_data)
+    await ensure_known_user(query)
+    if not is_admin(query.from_user.id):
+        return
     await state.clear()
-    product = await get_product(product_id)
-    await message.answer("Данные обновлены.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="К товару", callback_data=f"admin_stock_product:{product_id}")]]))
-
+    await query.answer(
+        "Редактирование отдельных товаров отключено. Измените данные отдела.",
+        show_alert=True,
+    )
 
 @dp.callback_query(F.data.startswith("admin_download_session:"))
 async def admin_download_session(query: CallbackQuery):

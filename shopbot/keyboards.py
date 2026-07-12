@@ -814,7 +814,6 @@ def admin_product_detail_kb(
     verify_back_token = admin_product_back_token(back_callback)
     rows = [
         [InlineKeyboardButton(text="Проверить товар", callback_data=f"admin_verify_account:{product_id}:{verify_back_token}")],
-        [InlineKeyboardButton(text="Редактировать", callback_data=f"admin_edit_product:{product_id}")],
         [
             InlineKeyboardButton(text="session+json", callback_data=f"admin_download_session:{product_id}"),
             InlineKeyboardButton(text="tdata", callback_data=f"admin_download_tdata:{product_id}"),
