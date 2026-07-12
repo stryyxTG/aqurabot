@@ -9414,15 +9414,48 @@ async def admin_add_description(message: Message, state: FSMContext):
 
 
 
+def normalize_duplicate_phone(phone: object) -> str:
+    return "".join(char for char in str(phone or "") if char.isdigit())
+
+
+def metadata_identity_value(metadata: dict | None, *keys: str) -> object:
+    for key in keys:
+        value = (metadata or {}).get(key)
+        if value not in (None, ""):
+            return value
+    return ""
+
+
 async def find_duplicate_product_for_identity(*, phone: str = "", telegram_id: int | None = None):
     return await find_existing_product_identity(phone=phone or "", telegram_id=telegram_id)
+
+
+def is_duplicate_prepared_item(item: dict) -> bool:
+    return bool(item.get("duplicate_product_id") or item.get("duplicate_source_idx"))
 
 
 def prepared_duplicate_items(prepared_items: list[dict], decisions: dict) -> list[dict]:
     return [
         item for item in prepared_items
-        if item.get("duplicate_product_id") and str(item.get("idx")) not in decisions
+        if is_duplicate_prepared_item(item) and str(item.get("idx")) not in decisions
     ]
+
+
+def duplicate_in_batch_prompt_text(candidate: dict, original: dict, *, position: int, total: int) -> str:
+    return (
+        f"{ICON_NOTICE} <b>Повтор внутри текущей ZIP</b>\n\n"
+        f"<b>Повтор {position}/{total}</b>\n\n"
+        f"<b>Новая заливка</b>\n"
+        f"- <b>Телефон:</b> <code>{duplicate_candidate_value(candidate, 'phone')}</code>\n"
+        f"- <b>Telegram ID:</b> <code>{duplicate_candidate_value(candidate, 'telegram_id')}</code>\n"
+        f"- <b>Файл:</b> <code>{duplicate_candidate_value(candidate, 'file_name')}</code>\n\n"
+        f"<b>Уже есть в этой ZIP</b>\n"
+        f"- <b>Позиция:</b> <code>#{original.get('idx', '—')}</code>\n"
+        f"- <b>Телефон:</b> <code>{duplicate_candidate_value(original, 'phone')}</code>\n"
+        f"- <b>Telegram ID:</b> <code>{duplicate_candidate_value(original, 'telegram_id')}</code>\n"
+        f"- <b>Файл:</b> <code>{duplicate_candidate_value(original, 'file_name')}</code>\n\n"
+        "Что сделать с повтором?"
+    )
 
 
 async def prepare_bulk_sessions_for_creation(data: dict, admin_id: int) -> tuple[list[dict], list[str]]:
@@ -9431,6 +9464,8 @@ async def prepare_bulk_sessions_for_creation(data: dict, admin_id: int) -> tuple
     bulk_session_names = data.get("bulk_session_names", {}) or {}
     prepared_items: list[dict] = []
     errors: list[str] = []
+    first_by_phone: dict[str, int] = {}
+    first_by_telegram_id: dict[int, int] = {}
 
     for idx, session_path in enumerate(bulk_sessions, 1):
         try:
@@ -9447,18 +9482,21 @@ async def prepare_bulk_sessions_for_creation(data: dict, admin_id: int) -> tuple
                 errors.append(f"Сессия #{idx}: {html.escape(str(error))}")
                 logger.warning(
                     "Bulk session rejected | admin=%s | item=%s/%s | session=%s | error=%s",
-                    admin_id,
-                    idx,
-                    len(bulk_sessions),
-                    Path(str(session_path)).name,
-                    error,
+                    admin_id, idx, len(bulk_sessions), Path(str(session_path)).name, error,
                 )
                 continue
 
-            phone = (alive_check.get("phone") or "").strip()
-            telegram_id = alive_check.get("user_id")
-            if telegram_id is not None:
-                telegram_id = int(telegram_id)
+            phone = str(alive_check.get("phone") or metadata_identity_value(json_metadata, "phone", "phone_number") or "").strip()
+            raw_telegram_id = alive_check.get("user_id") or metadata_identity_value(json_metadata, "user_id", "telegram_id", "id")
+            try:
+                telegram_id = int(raw_telegram_id) if raw_telegram_id not in (None, "") else None
+            except (TypeError, ValueError):
+                telegram_id = None
+            phone_key = normalize_duplicate_phone(phone)
+            batch_duplicate_source_idx = first_by_phone.get(phone_key) if phone_key else None
+            if batch_duplicate_source_idx is None and telegram_id is not None:
+                batch_duplicate_source_idx = first_by_telegram_id.get(telegram_id)
+
             duplicate = await find_duplicate_product_for_identity(phone=phone, telegram_id=telegram_id)
             prepared_items.append({
                 "idx": idx,
@@ -9470,15 +9508,17 @@ async def prepare_bulk_sessions_for_creation(data: dict, admin_id: int) -> tuple
                 "first_name": alive_check.get("first_name") or "",
                 "twofa_password": session_twofa,
                 "duplicate_product_id": int(duplicate["product_id"]) if duplicate else None,
+                "duplicate_source_idx": batch_duplicate_source_idx,
             })
+            if phone_key:
+                first_by_phone.setdefault(phone_key, idx)
+            if telegram_id is not None:
+                first_by_telegram_id.setdefault(telegram_id, idx)
         except Exception as exc:
             errors.append(f"Товар #{idx}: {html.escape(str(exc))}")
             logger.exception(
                 "Could not prepare bulk session | admin=%s | item=%s/%s | session=%s",
-                admin_id,
-                idx,
-                len(bulk_sessions),
-                Path(str(session_path)).name,
+                admin_id, idx, len(bulk_sessions), Path(str(session_path)).name,
             )
     return prepared_items, errors
 
@@ -9491,14 +9531,15 @@ async def create_prepared_bulk_products(data: dict, admin_id: int, prepared_item
 
     for item in prepared_items:
         duplicate_id = item.get("duplicate_product_id")
+        duplicate_source_idx = item.get("duplicate_source_idx")
         decision = decisions.get(str(item.get("idx")))
-        if duplicate_id and decision != "upload":
+        if (duplicate_id or duplicate_source_idx) and decision != "upload":
             skipped += 1
             discard_session_files(item.get("session_path") or "")
             logger.info(
                 "Duplicate bulk product skipped | admin=%s | duplicate=%s | item=%s | phone=%s",
                 admin_id,
-                duplicate_id,
+                duplicate_id or f"zip:{duplicate_source_idx}",
                 item.get("idx"),
                 mask_phone(item.get("phone")),
             )
@@ -9527,7 +9568,7 @@ async def create_prepared_bulk_products(data: dict, admin_id: int, prepared_item
                 mask_phone(item.get("phone")),
                 data.get("country", "-"),
                 plain_button_text(str(data.get("title", "-"))),
-                duplicate_id or "no",
+                duplicate_id or (f"zip:{duplicate_source_idx}" if duplicate_source_idx else "no"),
             )
         except Exception as exc:
             errors.append(f"Товар #{item.get('idx')}: {html.escape(str(exc))}")
@@ -9548,10 +9589,15 @@ async def show_bulk_duplicate_prompt(message: Message, state: FSMContext, *, edi
     if not pending:
         return False
     current = pending[0]
-    duplicates_total = len([item for item in prepared_items if item.get("duplicate_product_id")])
-    decided_total = len([item for item in prepared_items if item.get("duplicate_product_id") and str(item.get("idx")) in decisions])
-    existing = await get_product(int(current["duplicate_product_id"]))
-    text = duplicate_product_prompt_text(existing, current, position=decided_total + 1, total=duplicates_total)
+    duplicates_total = len([item for item in prepared_items if is_duplicate_prepared_item(item)])
+    decided_total = len([item for item in prepared_items if is_duplicate_prepared_item(item) and str(item.get("idx")) in decisions])
+    if current.get("duplicate_product_id"):
+        existing = await get_product(int(current["duplicate_product_id"]))
+        text = duplicate_product_prompt_text(existing, current, position=decided_total + 1, total=duplicates_total)
+    else:
+        source_idx = int(current.get("duplicate_source_idx") or 0)
+        original = next((item for item in prepared_items if int(item.get("idx") or 0) == source_idx), {})
+        text = duplicate_in_batch_prompt_text(current, original, position=decided_total + 1, total=duplicates_total)
     await state.set_state(AdminAddProductStates.waiting_duplicate_confirm)
     if edit:
         await safe_edit(message, text, duplicate_product_decision_kb(bulk=True))
