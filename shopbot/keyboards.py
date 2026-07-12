@@ -587,6 +587,7 @@ def admin_product_group_kb(
     if nav:
         rows.append(nav)
     rows.extend([
+        [InlineKeyboardButton(text="Скачать товары", callback_data=f"admin_group_download:{sample_product_id}:{country_id}")],
         [InlineKeyboardButton(text="Редачить", callback_data=f"admin_edit_group:{sample_product_id}:{country_id}")],
         [InlineKeyboardButton(text="Удалить отдел", callback_data=f"admin_remove_group_ask:{sample_product_id}:{country_id}", icon_custom_emoji_id=BTN_ICON_CANCEL)],
         [InlineKeyboardButton(text="Назад", callback_data=f"admin_country:{country_id}", icon_custom_emoji_id=BTN_ICON_BACK)],

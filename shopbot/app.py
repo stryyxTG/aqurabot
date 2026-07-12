@@ -1805,7 +1805,7 @@ def dead_product_reason(error: str) -> str:
     text = str(error or "").casefold()
     if "сессия не найдена" in text or ("session" in text and "not found" in text):
         return "Файл session отсутствует или недоступен на сервере."
-    if "не авториз" in text or "unauthor" in text or "authkey" in text or "auth key" in text:
+    if "сессия недействительна" in text or "не авториз" in text or "unauthor" in text or "authkey" in text or "auth key" in text:
         return "Session разлогинена: Telegram не считает ее авторизованной."
     if "banned" in text or "забан" in text or "deactivated" in text or "deleted" in text:
         return "Аккаунт забанен, удален или деактивирован Telegram."
@@ -1816,10 +1816,13 @@ def dead_product_reason(error: str) -> str:
     return "Проверка Telethon вернула ошибку, товар снят с выдачи."
 
 
-def failed_check_requires_removal(error: str) -> bool:
+def failed_check_requires_removal(error: str, result: dict | None = None) -> bool:
+    if result is not None and "fatal" in result:
+        return bool(result.get("fatal"))
     text = str(error or "").casefold()
     fatal_markers = (
         "сессия не найдена",
+        "сессия недействительна",
         "не авториз",
         "session not found",
         "not authorized",
@@ -1930,7 +1933,16 @@ async def verify_product_alive_for_sale(product, *, context: str) -> bool:
         )
         return True
     error = result.get("error", "Неизвестная ошибка")
-    await mark_product_dead_after_failed_check(product, error, context)
+    if failed_check_requires_removal(error, result):
+        await mark_product_dead_after_failed_check(product, error, context)
+    else:
+        logger.warning(
+            "Temporary product verification failure | product=%s | phone=%s | reason=%s | context=%s",
+            product_id,
+            mask_phone(product["phone"]),
+            str(error or "unknown"),
+            context,
+        )
     return False
 
 
@@ -5505,7 +5517,6 @@ def admin_post_remove_kb(back_callback: str) -> InlineKeyboardMarkup:
 @dp.callback_query(F.data.startswith("admin_verify_account:"))
 async def admin_verify_account(query: CallbackQuery):
     await ensure_known_user(query)
-    await query.answer()
     if not is_admin(query.from_user.id):
         return
 
@@ -5527,16 +5538,23 @@ async def admin_verify_account(query: CallbackQuery):
     try:
         result = await session_manager.verify_account_alive(product_id)
         
-        if result["alive"]:
+        if result.get("alive"):
+            await update_product_info(
+                product_id,
+                phone=result.get("phone") or product["phone"] or "",
+                telegram_id=result.get("user_id") or product["telegram_id"],
+                username=result.get("username") or product["username"] or "",
+                first_name=result.get("first_name") or product["first_name"] or "",
+            )
             status_text = (
                 f"<b>Товар живой</b>\n\n"
-                f"User ID: <code>{result['user_id']}</code>\n"
-                f"Телефон: <code>{result['phone']}</code>\n"
-                f"Username: <b>{result['username']}</b>"
+                f"User ID: <code>{result.get('user_id') or '—'}</code>\n"
+                f"Телефон: <code>{html.escape(str(result.get('phone') or product['phone'] or '—'))}</code>\n"
+                f"Username: <b>{html.escape(str(result.get('username') or 'нет'))}</b>"
             )
         else:
             error = result.get("error", "Unknown error")
-            if failed_check_requires_removal(error):
+            if failed_check_requires_removal(error, result):
                 marked_dead = await mark_product_dead_after_failed_check(
                     product,
                     error,
@@ -5773,7 +5791,7 @@ async def admin_scan_start(query: CallbackQuery, state: FSMContext):
                 success += 1
             else:
                 error = res.get("error", "Unknown error")
-                if failed_check_requires_removal(error):
+                if failed_check_requires_removal(error, res):
                     await mark_product_dead_after_failed_check(
                         p,
                         error,
@@ -6794,6 +6812,164 @@ async def admin_product_group_view(query: CallbackQuery):
             page=page,
             total_pages=total_pages,
         ),
+    )
+
+
+@dp.callback_query(F.data.startswith("admin_group_download:"))
+async def admin_group_download_choice(query: CallbackQuery):
+    await ensure_known_user(query)
+    if not is_admin(query.from_user.id):
+        return
+    try:
+        _, sample_raw, country_raw = (query.data or "").split(":", 2)
+        sample_product_id = int(sample_raw)
+        country_id = int(country_raw)
+    except (TypeError, ValueError):
+        await query.answer("Отдел не найден.", show_alert=True)
+        return
+
+    group = await get_product_department(sample_product_id)
+    if not group:
+        await query.answer("Отдел не найден.", show_alert=True)
+        return
+    available_count = await count_available_products_in_department(sample_product_id)
+    await query.answer()
+    text = (
+        f"{ICON_FOLDER} <b>Скачать товары отдела</b>\n\n"
+        f"<b>Отдел:</b> {render_rich_text(group['title'])}\n"
+        f"{ICON_COUNTRY} <b>Страна:</b> {html.escape(str(group['country']))}\n"
+        f"<b>В наличии:</b> {available_count}\n\n"
+        "Архив создаётся как копия. Статусы товаров и остаток отдела не изменятся."
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="session+json ZIP",
+                callback_data=f"admin_group_export:session:{sample_product_id}:{country_id}",
+            ),
+            InlineKeyboardButton(
+                text="tdata ZIP",
+                callback_data=f"admin_group_export:tdata:{sample_product_id}:{country_id}",
+            ),
+        ],
+        [InlineKeyboardButton(
+            text="Назад",
+            callback_data=f"admin_product_group:{sample_product_id}:{country_id}",
+            icon_custom_emoji_id=BTN_ICON_BACK,
+        )],
+    ])
+    await safe_edit(query.message, text, kb)
+
+
+@dp.callback_query(F.data.startswith("admin_group_export:"))
+async def admin_group_export(query: CallbackQuery):
+    await ensure_known_user(query)
+    if not is_admin(query.from_user.id):
+        return
+    try:
+        _, file_type, sample_raw, country_raw = (query.data or "").split(":", 3)
+        sample_product_id = int(sample_raw)
+        country_id = int(country_raw)
+    except (TypeError, ValueError):
+        await query.answer("Некорректный отдел.", show_alert=True)
+        return
+    if file_type not in {"session", "tdata"}:
+        await query.answer("Неизвестный формат архива.", show_alert=True)
+        return
+
+    group = await get_product_department(sample_product_id)
+    if not group:
+        await query.answer("Отдел не найден.", show_alert=True)
+        return
+    available_count = await count_available_products_in_department(sample_product_id)
+    if available_count <= 0:
+        await query.answer("В отделе нет товаров в наличии.", show_alert=True)
+        return
+    products = await list_available_products_in_department(sample_product_id, limit=available_count)
+    downloadable = [product for product in products if product_session_file(product)]
+    missing_errors = [
+        f"{product['phone'] or product['product_id']}: session не найдена"
+        for product in products
+        if not product_session_file(product)
+    ]
+    if not downloadable:
+        await query.answer("У доступных товаров не найдены session-файлы.", show_alert=True)
+        return
+
+    format_label = "session+json" if file_type == "session" else "tdata"
+    await query.answer("Готовлю архив...")
+    await safe_edit(
+        query.message,
+        f"{ICON_FOLDER} <b>Готовлю архив отдела</b>\n\n"
+        f"<b>Формат:</b> {format_label}\n"
+        f"<b>Товаров:</b> {len(downloadable)}\n\n"
+        "Товары останутся в наличии.",
+    )
+
+    batch_id = f"department_{abs(sample_product_id)}_{int(time.time())}"
+    with tempfile.TemporaryDirectory(prefix=f"admin_department_{abs(sample_product_id)}_") as tmp:
+        tmp_dir = Path(tmp)
+        try:
+            if file_type == "session":
+                archive_path, archive_errors = build_session_json_archive(downloadable, tmp_dir, batch_id)
+            else:
+                archive_path, archive_errors = await build_batch_tdata_archive(downloadable, tmp_dir, batch_id)
+            errors = missing_errors + archive_errors
+            added_count = len(downloadable) - len(archive_errors)
+        except Exception as exc:
+            logger.exception(
+                "Department export failed | department=%s | format=%s",
+                sample_product_id,
+                file_type,
+            )
+            await query.message.answer(
+                f"{ICON_BLOCK} <b>Не удалось создать архив</b>\n\n"
+                f"<code>{html.escape(str(exc) or type(exc).__name__)}</code>"
+            )
+            return
+
+        caption = (
+            f"{ICON_FOLDER} <b>Товары отдела</b>\n\n"
+            f"<b>Отдел:</b> {render_rich_text(group['title'])}\n"
+            f"<b>Формат:</b> {format_label}\n"
+            f"<b>Добавлено:</b> {added_count} из {len(products)}\n"
+            "<b>Статусы:</b> без изменений"
+        )
+        if errors:
+            caption += "\n\n<b>Пропущено:</b>\n" + "\n".join(
+                f"• {html.escape(error)}" for error in errors[:5]
+            )
+            if len(errors) > 5:
+                caption += f"\n• ... и ещё {len(errors) - 5}"
+        try:
+            await query.message.answer_document(
+                FSInputFile(archive_path, filename=archive_path.name),
+                caption=caption,
+            )
+        except TelegramAPIError as exc:
+            logger.exception(
+                "Could not send department archive | department=%s | format=%s | size=%s",
+                sample_product_id,
+                file_type,
+                archive_path.stat().st_size if archive_path.exists() else -1,
+            )
+            await query.message.answer(
+                f"{ICON_BLOCK} <b>Архив создан, но Telegram не принял файл</b>\n\n"
+                f"<code>{html.escape(str(exc))}</code>"
+            )
+            return
+
+    await safe_edit(
+        query.message,
+        f"{ICON_SUCCESS} <b>Архив отправлен</b>\n\n"
+        f"Формат: <b>{format_label}</b>\n"
+        f"Товаров в архиве: <b>{added_count}</b> из {len(products)}\n"
+        "Все товары остались в наличии.",
+        InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+            text="Назад к отделу",
+            callback_data=f"admin_product_group:{sample_product_id}:{country_id}",
+            icon_custom_emoji_id=BTN_ICON_BACK,
+        )]]),
     )
 
 

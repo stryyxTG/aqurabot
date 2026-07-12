@@ -595,70 +595,110 @@ class ShopSessionManager:
             except Exception:
                 pass
 
+    @staticmethod
+    def _verification_exception_result(exc: Exception) -> dict:
+        class_name = type(exc).__name__
+        details = str(exc).strip() or class_name
+        normalized_name = class_name.casefold()
+        normalized_details = details.casefold()
+        fatal_markers = (
+            "authkeyunregistered",
+            "authkeyduplicated",
+            "sessionrevoked",
+            "userdeactivated",
+            "phonenumberbanned",
+        )
+        fatal_text_markers = (
+            "auth key is not registered",
+            "authorization key",
+            "session revoked",
+            "user deactivated",
+            "account has been deleted",
+        )
+        fatal = any(marker in normalized_name for marker in fatal_markers) or any(
+            marker in normalized_details for marker in fatal_text_markers
+        )
+        if fatal:
+            error = f"Сессия недействительна ({class_name}): {details}"
+        elif isinstance(exc, FloodWaitError):
+            error = f"Временное ограничение Telegram: подождите {exc.seconds} сек."
+        elif isinstance(exc, (asyncio.TimeoutError, TimeoutError, OSError, ConnectionError)):
+            error = f"Временная ошибка подключения ({class_name}): {details}"
+        else:
+            error = f"Ошибка Telegram ({class_name}): {details}"
+        return {"alive": False, "fatal": fatal, "error": error}
+
     async def verify_account_alive(self, product_id: int) -> dict:
-        """
-        Проверяет живой ли товар:
-        - Может ли мы к нему подключиться
-        - Авторизован ли он
-        - Получаем инфо о профиле
-        """
+        """Connect to a stored session and classify permanent and temporary failures."""
         session_path = await self._get_product_session_path(product_id)
         if not session_path or not Path(session_path).exists():
-            return {"alive": False, "error": "Сессия не найдена"}
-        
+            return {"alive": False, "fatal": True, "error": "Сессия не найдена"}
+
         proxy_settings = load_global_proxy()
         client = self._build_client(Path(session_path), proxy_settings)
-        
         try:
             await self._connect_with_backoff(client, max_retries=1)
-            
-            if not await client.is_user_authorized():
-                return {"alive": False, "error": "Товар не авторизован"}
-            
-            # Получаем инфо о пользователе
-            me = await client.get_me()
-            
-            await client.disconnect()
-            
+            if not await self._run_once(client.is_user_authorized()):
+                return {"alive": False, "fatal": True, "error": "Товар не авторизован"}
+
+            me = await self._run_once(client.get_me())
+            if me is None:
+                return {"alive": False, "fatal": False, "error": "Telegram не вернул данные профиля"}
             return {
                 "alive": True,
+                "fatal": False,
                 "user_id": me.id,
-                "phone": me.phone,
-                "username": me.username or "нет",
-                "first_name": me.first_name or "User"
+                "phone": me.phone or "",
+                "username": me.username or "",
+                "first_name": me.first_name or "User",
             }
-            
-        except Exception as e:
+        except Exception as exc:
+            logger.warning(
+                "Product session verification failed | product=%s | error_type=%s | error=%s",
+                product_id,
+                type(exc).__name__,
+                _mask_digits_in_text(str(exc), limit=160),
+            )
+            return self._verification_exception_result(exc)
+        finally:
             try:
                 await client.disconnect()
-            except:
+            except Exception:
                 pass
-            return {"alive": False, "error": f"Ошибка: {str(e)}"}
 
     async def verify_session_file_alive(self, session_path: str | Path) -> dict:
         """Check a raw .session file before creating a product row."""
         session_file = Path(session_path)
         if not session_file.exists():
-            return {"alive": False, "error": "Сессия не найдена"}
+            return {"alive": False, "fatal": True, "error": "Сессия не найдена"}
 
         proxy_settings = load_global_proxy()
         metadata = self._load_client_metadata(session_file)
         client = self._build_client(session_file, proxy_settings, metadata)
         try:
             await self._connect_with_backoff(client, max_retries=1)
-            if not await client.is_user_authorized():
-                return {"alive": False, "error": "Товар не авторизован"}
+            if not await self._run_once(client.is_user_authorized()):
+                return {"alive": False, "fatal": True, "error": "Товар не авторизован"}
 
-            me = await client.get_me()
+            me = await self._run_once(client.get_me())
+            if me is None:
+                return {"alive": False, "fatal": False, "error": "Telegram не вернул данные профиля"}
             return {
                 "alive": True,
+                "fatal": False,
                 "user_id": me.id,
-                "phone": me.phone,
+                "phone": me.phone or "",
                 "username": me.username or "",
                 "first_name": me.first_name or "User",
             }
-        except Exception as e:
-            return {"alive": False, "error": f"Ошибка: {str(e)}"}
+        except Exception as exc:
+            logger.warning(
+                "Uploaded session verification failed | file=%s | error_type=%s | error=%s",
+                session_file.name,
+                type(exc).__name__,
+                _mask_digits_in_text(str(exc), limit=160),
+            )
+            return self._verification_exception_result(exc)
         finally:
             try:
                 await client.disconnect()
