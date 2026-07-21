@@ -5742,6 +5742,11 @@ def admin_product_back_callback_from_token(token: str) -> str:
             return f"catalog_country:{country_id}:{page}"
     if token in {"u", "public_catalog"}:
         return "catalog_accounts"
+    if token.startswith("scan:"):
+        try:
+            return f"admin_scan_failed_list:{max(0, int(token.split(':', 1)[1]))}"
+        except ValueError:
+            return "admin_scan_failed_list"
     if token == "scan":
         return "admin_scan_failed_list"
     return "admin_stock_catalog"
@@ -5764,6 +5769,8 @@ def admin_product_detail_callback_from_token(product_id: int, token: str) -> str
             return f"product_{product_id}:c{parts[1]}:{parts[2]}"
     if token in {"u", "public_catalog"}:
         return "catalog_accounts"
+    if token.startswith("scan:"):
+        return f"scan_err_det:{product_id}:{token.split(':', 1)[1]}"
     if token == "scan":
         return f"scan_err_det:{product_id}"
     return f"admin_stock_product:{product_id}"
@@ -5860,9 +5867,22 @@ async def admin_verify_account(query: CallbackQuery):
             ),
         )
     
-    except Exception as e:
-        logger.exception("Ошибка при проверке товара")
-        await query.answer(f"Ошибка: {str(e)}", show_alert=True)
+    except Exception as exc:
+        logger.exception("Product verification failed unexpectedly | product=%s", product_id)
+        current_product = await get_product(product_id) or product
+        has_session = has_server_session(current_product)
+        await safe_edit(
+            query.message,
+            f"{ICON_BLOCK} <b>\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043f\u0440\u043e\u0432\u0435\u0440\u0438\u0442\u044c \u0442\u043e\u0432\u0430\u0440</b>\n\n"
+            f"<code>{html.escape(str(exc) or type(exc).__name__)}</code>",
+            admin_product_detail_kb(
+                product_id,
+                back_callback=back_callback,
+                can_terminate_sessions=has_session,
+                can_fetch_code=has_session,
+                can_claim=current_product["status"] in {"available", "waiting_code"},
+            ),
+        )
 
 
 @dp.callback_query(F.data == "admin_scan_accounts")
@@ -6112,7 +6132,7 @@ async def admin_scan_failed_list(query: CallbackQuery, state: FSMContext):
 
     rows = []
     for pid in page_ids:
-        rows.append([InlineKeyboardButton(text=f"Товар #{pid}", callback_data=f"scan_err_det:{pid}")])
+        rows.append([InlineKeyboardButton(text=f"Товар #{pid}", callback_data=f"scan_err_det:{pid}:{page}")])
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton(text="<", callback_data=f"admin_scan_failed_list:{page - 1}"))
@@ -6135,7 +6155,13 @@ async def admin_scan_failed_list(query: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data.startswith("scan_err_det:"))
 async def admin_scan_failed_detail(query: CallbackQuery, state: FSMContext):
     await query.answer()
-    pid = int(query.data.split(":")[1])
+    parts = (query.data or "").split(":")
+    try:
+        pid = int(parts[1])
+        page = max(0, int(parts[2])) if len(parts) > 2 else 0
+    except (IndexError, ValueError):
+        await query.answer("\u0422\u043e\u0432\u0430\u0440 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d.", show_alert=True)
+        return
     data = await state.get_data()
     errors = data.get("last_scan_errors", {})
     err_text = errors.get(pid, "No error saved")
@@ -6152,8 +6178,8 @@ async def admin_scan_failed_detail(query: CallbackQuery, state: FSMContext):
     )
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Удалить товар", callback_data=f"admin_remove_{pid}")],
-        [InlineKeyboardButton(text="К списку ошибок", callback_data="admin_scan_failed_list")]
+        [InlineKeyboardButton(text="Удалить товар", callback_data=f"ard1:{pid}:scan:{page}")],
+        [InlineKeyboardButton(text="К списку ошибок", callback_data=f"admin_scan_failed_list:{page}")]
     ])
     await safe_edit(query.message, text, kb)
 
@@ -10403,7 +10429,9 @@ async def cancel_flow(query: CallbackQuery, state: FSMContext):
         await safe_edit(query.message, text, await build_admin_catalog_keyboard(user_id=query.from_user.id))
     elif back_callback.startswith("admin_country:"):
         try:
-            country_id = int(back_callback.rsplit(":", 1)[1])
+            parts = back_callback.split(":")
+            country_id = int(parts[1])
+            country_page = max(0, int(parts[2])) if len(parts) > 2 else 0
         except ValueError:
             text = (
                 "<b>Страны каталога</b>\n\n"
@@ -10413,7 +10441,7 @@ async def cancel_flow(query: CallbackQuery, state: FSMContext):
             )
             await safe_edit(query.message, text, await build_admin_catalog_keyboard(user_id=query.from_user.id))
         else:
-            await render_admin_country(query.message, country_id)
+            await render_admin_country(query.message, country_id, user_id=query.from_user.id, page=country_page)
     elif back_callback.startswith("admin_user_card:"):
         try:
             target_id = int(back_callback.split(":", 1)[1])
