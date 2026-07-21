@@ -561,6 +561,7 @@ def admin_country_kb(
     total_pages: int = 1,
     sort_callback: str | None = None,
     clear_sort_callback: str | None = None,
+    catalog_page: int = 0,
 ) -> InlineKeyboardMarkup:
     rows = list(group_rows or [])
     if total_pages > 1:
@@ -580,7 +581,7 @@ def admin_country_kb(
             [InlineKeyboardButton(text="Создать отдел", callback_data=f"admin_department_create:{country_id}")],
             [InlineKeyboardButton(text="Переименовать", callback_data=f"admin_country_rename:{country_id}")],
             [InlineKeyboardButton(text="Удалить регион", callback_data=f"admin_country_remove_ask:{country_id}", icon_custom_emoji_id=BTN_ICON_CANCEL)],
-            [InlineKeyboardButton(text="Назад", callback_data="admin_catalog", icon_custom_emoji_id=BTN_ICON_BACK)],
+            [InlineKeyboardButton(text="Назад", callback_data=f"admin_catalog:{catalog_page}", icon_custom_emoji_id=BTN_ICON_BACK)],
         ]
     )
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -593,6 +594,7 @@ def admin_product_group_kb(
     account_rows: list[list[InlineKeyboardButton]] | None = None,
     page: int = 0,
     total_pages: int = 1,
+    country_page: int = 0,
 ) -> InlineKeyboardMarkup:
     rows = list(account_rows or [])
     nav = []
@@ -609,7 +611,7 @@ def admin_product_group_kb(
         [InlineKeyboardButton(text="Удалить товары", callback_data=f"admin_group_remove_products_ask:{sample_product_id}:{country_id}", icon_custom_emoji_id=BTN_ICON_CANCEL)],
         [InlineKeyboardButton(text="Редачить", callback_data=f"admin_edit_group:{sample_product_id}:{country_id}")],
         [InlineKeyboardButton(text="Удалить отдел", callback_data=f"admin_remove_group_ask:{sample_product_id}:{country_id}", icon_custom_emoji_id=BTN_ICON_CANCEL)],
-        [InlineKeyboardButton(text="Назад", callback_data=f"admin_country:{country_id}", icon_custom_emoji_id=BTN_ICON_BACK)],
+        [InlineKeyboardButton(text="Назад", callback_data=f"admin_country:{country_id}:{country_page}", icon_custom_emoji_id=BTN_ICON_BACK)],
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

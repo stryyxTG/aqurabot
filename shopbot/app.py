@@ -279,6 +279,9 @@ catalog_group_sort_modes: dict[int, str] = {}
 admin_catalog_search_cache: dict[int, str] = {}
 admin_catalog_sort_modes: dict[int, str] = {}
 admin_group_sort_modes: dict[int, str] = {}
+admin_catalog_page_cache: dict[int, int] = {}
+admin_country_group_page_cache: dict[tuple[int, int], int] = {}
+admin_product_group_page_cache: dict[tuple[int, int, int], int] = {}
 admin_stock_search_cache: dict[int, str] = {}
 admin_stock_sort_modes: dict[int, str] = {}
 
@@ -483,6 +486,7 @@ FSM_CALLBACK_WHITELIST = {
     AdminAddProductStates.waiting_country.state: ("add_country:", "add_country_page", "add_country_search", "add_country_search_clear"),
     AdminAddProductStates.waiting_department.state: ("add_department:", "add_department_new", "add_department_back"),
     AdminAddProductStates.waiting_duplicate_confirm.state: ("add_duplicate_",),
+    AdminEditProductGroupStates.waiting_new_value.state: ("admin_product_group:",),
     ServiceOrderStates.waiting_recipient.state: ("service_order_cancel",),
     UserTopUpStates.waiting_receipt.state: ("cancel_topup_receipt",),
     AdminBroadcastStates.waiting_text.state: ("admin_broadcast_send", "broadcast_confirm"),
@@ -2498,6 +2502,8 @@ async def build_admin_catalog_keyboard(
         search_query=search_query,
         sort_mode=sort_mode,
     )
+    if user_id is not None:
+        admin_catalog_page_cache[int(user_id)] = page
     return admin_catalog_kb(
         rows,
         page=page,
@@ -7021,6 +7027,8 @@ async def render_admin_country(message: Message, country_id: int, *, user_id: in
     total = await count_products(country=country["name"])
     all_groups = await list_product_departments(country=country["name"], limit=100000, sort_mode=sort_mode)
     page, total_pages = clamp_page(page, len(all_groups), PAGE_SIZE)
+    if user_id is not None:
+        admin_country_group_page_cache[(user_id, country_id)] = page
     groups = all_groups[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]
     group_rows = []
     for group in groups:
@@ -7050,6 +7058,7 @@ async def render_admin_country(message: Message, country_id: int, *, user_id: in
             total_pages=total_pages,
             sort_callback=f"admin_group_sort:{country_id}:{page}",
             clear_sort_callback=f"admin_group_sort_clear:{country_id}:{page}" if sort_mode else None,
+            catalog_page=admin_catalog_page_cache.get(user_id, 0) if user_id is not None else 0,
         ),
     )
 
@@ -7063,7 +7072,7 @@ async def admin_country_view(query: CallbackQuery):
     parts = (query.data or "").split(":")
     try:
         country_id = int(parts[1])
-        page = max(0, int(parts[2])) if len(parts) > 2 else 0
+        page = max(0, int(parts[2])) if len(parts) > 2 else admin_country_group_page_cache.get((query.from_user.id, country_id), 0)
     except (IndexError, ValueError):
         await query.answer("\u0421\u0442\u0440\u0430\u043d\u0430 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u0430.", show_alert=True)
         return
@@ -7184,9 +7193,11 @@ async def admin_department_create_finish(message: Message, state: FSMContext):
 
 
 @dp.callback_query(F.data.startswith("admin_product_group:"))
-async def admin_product_group_view(query: CallbackQuery):
+async def admin_product_group_view(query: CallbackQuery, state: FSMContext):
     await ensure_known_user(query)
     await query.answer()
+    if await state.get_state() == AdminEditProductGroupStates.waiting_new_value.state:
+        await state.clear()
     if not is_admin(query.from_user.id):
         return
     try:
@@ -7195,7 +7206,7 @@ async def admin_product_group_view(query: CallbackQuery):
         country_id_raw = parts[2]
         sample_product_id = int(sample_id_raw)
         country_id = int(country_id_raw)
-        page = max(0, int(parts[3])) if len(parts) > 3 else 0
+        page = max(0, int(parts[3])) if len(parts) > 3 else admin_product_group_page_cache.get((query.from_user.id, sample_product_id, country_id), 0)
     except (ValueError, IndexError):
         await query.answer("Тип товара не найден.", show_alert=True)
         return
@@ -7206,6 +7217,7 @@ async def admin_product_group_view(query: CallbackQuery):
     total_accounts = await count_products_in_department(sample_product_id)
     total_pages = -(-total_accounts // PAGE_SIZE) if total_accounts > 0 else 1
     page = min(page, total_pages - 1)
+    admin_product_group_page_cache[(query.from_user.id, sample_product_id, country_id)] = page
     products = await list_products_in_department(sample_product_id, limit=PAGE_SIZE, offset=page * PAGE_SIZE)
     account_rows = []
     status_labels = {
@@ -7238,6 +7250,7 @@ async def admin_product_group_view(query: CallbackQuery):
             account_rows=account_rows,
             page=page,
             total_pages=total_pages,
+            country_page=admin_country_group_page_cache.get((query.from_user.id, country_id), 0),
         ),
     )
 
@@ -7573,7 +7586,14 @@ async def admin_edit_group_choice(query: CallbackQuery, state: FSMContext):
     if not group:
         await query.answer("Этот тип товара закончился.", show_alert=True)
         return
-    await state.update_data(edit_group_sample_id=sample_product_id, edit_group_country_id=country_id)
+    product_page = admin_product_group_page_cache.get((query.from_user.id, sample_product_id, country_id), 0)
+    country_page = admin_country_group_page_cache.get((query.from_user.id, country_id), 0)
+    await state.update_data(
+        edit_group_sample_id=sample_product_id,
+        edit_group_country_id=country_id,
+        edit_group_product_page=product_page,
+        edit_group_country_page=country_page,
+    )
     await safe_edit(
         query.message,
         product_group_admin_text(group) + "\n\nЧто редачим?",
@@ -7582,7 +7602,7 @@ async def admin_edit_group_choice(query: CallbackQuery, state: FSMContext):
             [InlineKeyboardButton(text="Цена", callback_data="edit_group_field:price")],
             [InlineKeyboardButton(text="Описание", callback_data="edit_group_field:description")],
             [InlineKeyboardButton(text="Заметка после покупки", callback_data="edit_group_field:extra_code")],
-            [InlineKeyboardButton(text="Отменить", callback_data=f"admin_product_group:{sample_product_id}:{country_id}", icon_custom_emoji_id=BTN_ICON_CANCEL)],
+            [InlineKeyboardButton(text="Отменить", callback_data=f"admin_product_group:{sample_product_id}:{country_id}:{product_page}", icon_custom_emoji_id=BTN_ICON_CANCEL)],
         ]),
     )
 
@@ -7725,7 +7745,19 @@ async def admin_edit_group_field(query: CallbackQuery, state: FSMContext):
     await state.set_state(AdminEditProductGroupStates.waiting_new_value)
     data = await state.get_data()
     country_id = int(data.get("edit_group_country_id") or 0)
-    await safe_edit(query.message, prompts[field], cancel_flow_kb(f"admin_country:{country_id}"))
+    sample_product_id = int(data.get("edit_group_sample_id") or 0)
+    product_page = int(data.get("edit_group_product_page") or 0)
+    await safe_edit(
+        query.message,
+        prompts[field],
+        InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(
+                text="\u041e\u0442\u043c\u0435\u043d\u0438\u0442\u044c",
+                callback_data=f"admin_product_group:{sample_product_id}:{country_id}:{product_page}",
+                icon_custom_emoji_id=BTN_ICON_CANCEL,
+            )
+        ]]),
+    )
 
 
 @dp.message(AdminEditProductGroupStates.waiting_new_value)
@@ -7735,6 +7767,8 @@ async def admin_edit_group_new_value(message: Message, state: FSMContext):
     data = await state.get_data()
     sample_product_id = int(data.get("edit_group_sample_id") or 0)
     country_id = int(data.get("edit_group_country_id") or 0)
+    product_page = int(data.get("edit_group_product_page") or 0)
+    country_page = int(data.get("edit_group_country_page") or 0)
     field = data.get("edit_group_field")
     raw_value = (message.text or "").strip()
     if field == "price":
@@ -7765,7 +7799,12 @@ async def admin_edit_group_new_value(message: Message, state: FSMContext):
     if group:
         await message.answer(
             f"Обновлено товаров: <b>{changed}</b>\n\n" + product_group_admin_text(group),
-            reply_markup=admin_product_group_kb(int(group["sample_product_id"]), country_id),
+            reply_markup=admin_product_group_kb(
+                int(group["sample_product_id"]),
+                country_id,
+                page=product_page,
+                country_page=country_page,
+            ),
         )
     else:
         await message.answer(
