@@ -2354,6 +2354,86 @@ async def build_batch_tdata_archive(products: list, output_dir: Path, batch_id: 
     return archive_path, errors
 
 
+
+def safe_archive_folder_name(value: object, fallback: str) -> str:
+    cleaned = " ".join(str(value or "").split())
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", cleaned).strip(". ")
+    return cleaned[:100] or fallback
+
+
+def active_export_folder_parts(product) -> tuple[str, str]:
+    country = safe_archive_folder_name(product["country"], "country")
+    title = safe_archive_folder_name(product["title"], "department")
+    price = safe_filename_part(f"{float(product['price']):.8f}".rstrip("0").rstrip("."), "price")
+    return country, f"{title} [{price}]"
+
+
+def build_active_products_session_archive(products: list, output_dir: Path) -> tuple[Path, list[str], int]:
+    archive_path = output_dir / f"active_products_session_json_{int(time.time())}.zip"
+    labels_by_folder: dict[str, set[str]] = {}
+    errors: list[str] = []
+    added = 0
+    with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as archive:
+        for product in products:
+            session_file = product_session_file(product)
+            account = str(product["phone"] or product["product_id"])
+            if not session_file:
+                errors.append(f"{account}: \u0444\u0430\u0439\u043b .session \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d")
+                continue
+            country_dir, department_dir = active_export_folder_parts(product)
+            folder = f"{country_dir}/{department_dir}"
+            label = unique_account_label(product, labels_by_folder.setdefault(folder, set()))
+            try:
+                archive.write(session_file, f"{folder}/{label}.session")
+                original_json = session_original_json_path(session_file)
+                if original_json.exists():
+                    archive.write(original_json, f"{folder}/{label}.json")
+                else:
+                    metadata = normalize_session_metadata(
+                        load_existing_session_metadata(session_file) or {},
+                        default_api_id=settings.api_id,
+                        default_api_hash=settings.api_hash,
+                    )
+                    metadata["session_file"] = f"{label}.session"
+                    archive.writestr(
+                        f"{folder}/{label}.json",
+                        json.dumps(serialize_session_metadata(metadata), ensure_ascii=False, indent=2) + "\n",
+                    )
+                added += 1
+            except Exception as exc:
+                errors.append(f"{account}: {exc}")
+    if added == 0:
+        raise RuntimeError(errors[0] if errors else "\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0434\u043e\u0431\u0430\u0432\u0438\u0442\u044c session-\u0444\u0430\u0439\u043b\u044b \u0432 \u0430\u0440\u0445\u0438\u0432.")
+    return archive_path, errors, added
+
+
+async def build_active_products_tdata_archive(products: list, output_dir: Path) -> tuple[Path, list[str], int]:
+    root_dir = output_dir / "active_products_tdata"
+    archive_path = output_dir / f"active_products_tdata_{int(time.time())}.zip"
+    labels_by_folder: dict[str, set[str]] = {}
+    errors: list[str] = []
+    added = 0
+    root_dir.mkdir(parents=True, exist_ok=True)
+    for product in products:
+        account = str(product["phone"] or product["product_id"])
+        if not product_session_file(product):
+            errors.append(f"{account}: \u0444\u0430\u0439\u043b .session \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d")
+            continue
+        country_dir, department_dir = active_export_folder_parts(product)
+        folder = f"{country_dir}/{department_dir}"
+        label = unique_account_label(product, labels_by_folder.setdefault(folder, set()))
+        try:
+            await save_product_tdata(product, root_dir / country_dir / department_dir / label / "tdata")
+            added += 1
+        except Exception as exc:
+            logger.exception("Could not build active product tdata | product=%s", product["product_id"])
+            errors.append(f"{account}: {exc}")
+    if added == 0:
+        raise RuntimeError(errors[0] if errors else "\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043f\u043e\u0434\u0433\u043e\u0442\u043e\u0432\u0438\u0442\u044c tdata.")
+    zip_directory_contents(root_dir, archive_path)
+    return archive_path, errors, added
+
+
 def normalize_country_search(value: object) -> str:
     return " ".join(str(value or "").casefold().split())
 
@@ -6299,6 +6379,137 @@ async def admin_verify_account(query: CallbackQuery):
                 can_claim=current_product["status"] in {"available", "waiting_code"},
             ),
         )
+
+
+def active_products_export_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="session+json ZIP", callback_data="admin_active_export_run:session"),
+            InlineKeyboardButton(text="tdata ZIP", callback_data="admin_active_export_run:tdata"),
+        ],
+        [InlineKeyboardButton(text="\u041d\u0430\u0437\u0430\u0434", callback_data="admin_home", icon_custom_emoji_id=BTN_ICON_BACK)],
+    ])
+
+
+@dp.callback_query(F.data == "admin_active_export")
+async def admin_active_export_choice(query: CallbackQuery):
+    await ensure_known_user(query)
+    if not is_admin(query.from_user.id):
+        return
+    available_count = await count_products(status="available")
+    await query.answer()
+    if available_count <= 0:
+        await safe_edit(
+            query.message,
+            "<b>\u0421\u043a\u0430\u0447\u0430\u0442\u044c \u0430\u043a\u0442\u0438\u0432\u043d\u044b\u0435 \u0442\u043e\u0432\u0430\u0440\u044b</b>\n\n"
+            "\u0421\u0435\u0439\u0447\u0430\u0441 \u0432 \u043d\u0430\u043b\u0438\u0447\u0438\u0438 \u043d\u0435\u0442 \u0442\u043e\u0432\u0430\u0440\u043e\u0432.",
+            admin_home_kb(),
+        )
+        return
+    await safe_edit(
+        query.message,
+        "<b>\u0421\u043a\u0430\u0447\u0430\u0442\u044c \u0430\u043a\u0442\u0438\u0432\u043d\u044b\u0435 \u0442\u043e\u0432\u0430\u0440\u044b</b>\n\n"
+        f"<b>\u0412 \u043d\u0430\u043b\u0438\u0447\u0438\u0438:</b> {available_count}\n\n"
+        "\u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u0444\u043e\u0440\u043c\u0430\u0442. \u0410\u0440\u0445\u0438\u0432 \u0441\u043e\u0431\u0438\u0440\u0430\u0435\u0442\u0441\u044f \u043a\u0430\u043a \u043a\u043e\u043f\u0438\u044f: \u0442\u043e\u0432\u0430\u0440\u044b \u043e\u0441\u0442\u0430\u043d\u0443\u0442\u0441\u044f \u0432 \u043d\u0430\u043b\u0438\u0447\u0438\u0438, \u0441\u0435\u0441\u0441\u0438\u0438 \u043d\u0430 \u0441\u0435\u0440\u0432\u0435\u0440\u0435 \u043d\u0435 \u0438\u0437\u043c\u0435\u043d\u044f\u044e\u0442\u0441\u044f.\n\n"
+        "\u0421\u0442\u0440\u0443\u043a\u0442\u0443\u0440\u0430: <code>\u0441\u0442\u0440\u0430\u043d\u0430/\u043e\u0442\u0434\u0435\u043b [\u0446\u0435\u043d\u0430]/\u043d\u043e\u043c\u0435\u0440</code>.",
+        active_products_export_kb(),
+    )
+
+
+@dp.callback_query(F.data.startswith("admin_active_export_run:"))
+async def admin_active_export_run(query: CallbackQuery):
+    await ensure_known_user(query)
+    if not is_admin(query.from_user.id):
+        return
+    file_type = (query.data or "").rsplit(":", 1)[-1]
+    if file_type not in {"session", "tdata"}:
+        await query.answer("\u041d\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043d\u044b\u0439 \u0444\u043e\u0440\u043c\u0430\u0442.", show_alert=True)
+        return
+    available_count = await count_products(status="available")
+    if available_count <= 0:
+        await query.answer("\u0410\u043a\u0442\u0438\u0432\u043d\u044b\u0445 \u0442\u043e\u0432\u0430\u0440\u043e\u0432 \u043d\u0435\u0442.", show_alert=True)
+        return
+    products = await list_products(status="available", limit=available_count)
+    products = sorted(
+        products,
+        key=lambda product: (
+            str(product["country"] or "").casefold(),
+            str(product["title"] or "").casefold(),
+            float(product["price"]),
+            int(product["product_id"]),
+        ),
+    )
+    format_label = "session+json" if file_type == "session" else "tdata"
+    await query.answer("\u0413\u043e\u0442\u043e\u0432\u043b\u044e \u0430\u0440\u0445\u0438\u0432...")
+    await safe_edit(
+        query.message,
+        f"{ICON_FOLDER} <b>\u0413\u043e\u0442\u043e\u0432\u043b\u044e \u043e\u0431\u0449\u0438\u0439 \u0430\u0440\u0445\u0438\u0432</b>\n\n"
+        f"<b>\u0424\u043e\u0440\u043c\u0430\u0442:</b> {format_label}\n"
+        f"<b>\u0422\u043e\u0432\u0430\u0440\u043e\u0432 \u0432 \u043d\u0430\u043b\u0438\u0447\u0438\u0438:</b> {len(products)}\n\n"
+        "\u042d\u0442\u043e \u043c\u043e\u0436\u0435\u0442 \u0437\u0430\u043d\u044f\u0442\u044c \u0432\u0440\u0435\u043c\u044f, \u043e\u0441\u043e\u0431\u0435\u043d\u043d\u043e \u0434\u043b\u044f tdata. \u041d\u0435 \u0437\u0430\u043a\u0440\u044b\u0432\u0430\u0439\u0442\u0435 \u0431\u043e\u0442\u0430 \u0434\u043e \u043f\u043e\u043b\u0443\u0447\u0435\u043d\u0438\u044f \u0444\u0430\u0439\u043b\u0430.",
+    )
+    with tempfile.TemporaryDirectory(prefix="admin_active_products_") as tmp:
+        tmp_dir = Path(tmp)
+        try:
+            if file_type == "session":
+                archive_path, errors, added_count = build_active_products_session_archive(products, tmp_dir)
+            else:
+                archive_path, errors, added_count = await build_active_products_tdata_archive(products, tmp_dir)
+        except Exception as exc:
+            logger.exception("Active products export failed | admin=%s | format=%s", query.from_user.id, file_type)
+            await safe_edit(
+                query.message,
+                f"{ICON_BLOCK} <b>\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0441\u043e\u0437\u0434\u0430\u0442\u044c \u0430\u0440\u0445\u0438\u0432</b>\n\n"
+                f"<code>{html.escape(str(exc) or type(exc).__name__)}</code>",
+                active_products_export_kb(),
+            )
+            return
+        caption = (
+            f"{ICON_FOLDER} <b>\u0412\u0441\u0435 \u0430\u043a\u0442\u0438\u0432\u043d\u044b\u0435 \u0442\u043e\u0432\u0430\u0440\u044b</b>\n\n"
+            f"<b>\u0424\u043e\u0440\u043c\u0430\u0442:</b> {format_label}\n"
+            f"<b>\u0412 \u0430\u0440\u0445\u0438\u0432\u0435:</b> {added_count} \u0438\u0437 {len(products)}\n"
+            "<b>\u0421\u0442\u0440\u0443\u043a\u0442\u0443\u0440\u0430:</b> \u0441\u0442\u0440\u0430\u043d\u0430/\u043e\u0442\u0434\u0435\u043b [\u0446\u0435\u043d\u0430]/\u043d\u043e\u043c\u0435\u0440\n"
+            "<b>\u0421\u0442\u0430\u0442\u0443\u0441\u044b:</b> \u0431\u0435\u0437 \u0438\u0437\u043c\u0435\u043d\u0435\u043d\u0438\u0439"
+        )
+        if errors:
+            caption += "\n\n<b>\u041f\u0440\u043e\u043f\u0443\u0449\u0435\u043d\u043e:</b>\n" + "\n".join(
+                f"\u2022 {html.escape(str(error))}" for error in errors[:5]
+            )
+            if len(errors) > 5:
+                caption += f"\n\u2022 ... \u0438 \u0435\u0449\u0451 {len(errors) - 5}"
+        try:
+            await query.message.answer_document(
+                FSInputFile(archive_path, filename=archive_path.name),
+                caption=caption,
+            )
+        except TelegramAPIError as exc:
+            logger.exception(
+                "Could not send active products archive | admin=%s | format=%s | size=%s",
+                query.from_user.id,
+                file_type,
+                archive_path.stat().st_size if archive_path.exists() else -1,
+            )
+            await safe_edit(
+                query.message,
+                f"{ICON_BLOCK} <b>\u0410\u0440\u0445\u0438\u0432 \u0441\u043e\u0437\u0434\u0430\u043d, \u043d\u043e Telegram \u043d\u0435 \u043f\u0440\u0438\u043d\u044f\u043b \u0444\u0430\u0439\u043b</b>\n\n"
+                f"<b>\u0420\u0430\u0437\u043c\u0435\u0440:</b> {archive_path.stat().st_size // (1024 * 1024)} MB\n"
+                f"<code>{html.escape(str(exc))}</code>",
+                active_products_export_kb(),
+            )
+            return
+    await log_purchase(
+        "admin_action",
+        admin_id=query.from_user.id,
+        action=f"\u0421\u043a\u0430\u0447\u0430\u043d \u043e\u0431\u0449\u0438\u0439 \u0430\u0440\u0445\u0438\u0432 \u0430\u043a\u0442\u0438\u0432\u043d\u044b\u0445 \u0442\u043e\u0432\u0430\u0440\u043e\u0432: {format_label}, {added_count} \u0438\u0437 {len(products)}",
+    )
+    await safe_edit(
+        query.message,
+        f"{ICON_SUCCESS} <b>\u0410\u0440\u0445\u0438\u0432 \u043e\u0442\u043f\u0440\u0430\u0432\u043b\u0435\u043d</b>\n\n"
+        f"<b>\u0424\u043e\u0440\u043c\u0430\u0442:</b> {format_label}\n"
+        f"<b>\u0422\u043e\u0432\u0430\u0440\u043e\u0432 \u0432 \u0430\u0440\u0445\u0438\u0432\u0435:</b> {added_count} \u0438\u0437 {len(products)}\n"
+        "\u0412\u0441\u0435 \u0442\u043e\u0432\u0430\u0440\u044b \u043e\u0441\u0442\u0430\u043b\u0438\u0441\u044c \u0432 \u043d\u0430\u043b\u0438\u0447\u0438\u0438.",
+        active_products_export_kb(),
+    )
 
 
 @dp.callback_query(F.data == "admin_scan_accounts")

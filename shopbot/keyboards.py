@@ -479,8 +479,9 @@ def admin_home_kb() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="Страны каталога", callback_data="admin_catalog")],
             [InlineKeyboardButton(text="Застрявшие товары", callback_data="admin_stuck_products")],
             [InlineKeyboardButton(text="История продаж", callback_data="admin_stock_sold_list")],
-            [InlineKeyboardButton(text="Скан товаров", callback_data="admin_scan_accounts")],
-            [InlineKeyboardButton(text="Рассылка", callback_data="admin_broadcast")],
+            [InlineKeyboardButton(text="\u0421\u043a\u0430\u043d \u0442\u043e\u0432\u0430\u0440\u043e\u0432", callback_data="admin_scan_accounts")],
+            [InlineKeyboardButton(text="\u0421\u043a\u0430\u0447\u0430\u0442\u044c \u0430\u043a\u0442\u0438\u0432\u043d\u044b\u0435 \u0442\u043e\u0432\u0430\u0440\u044b", callback_data="admin_active_export")],
+            [InlineKeyboardButton(text="\u0420\u0430\u0441\u0441\u044b\u043b\u043a\u0430", callback_data="admin_broadcast")],
             [InlineKeyboardButton(text="В меню", callback_data="menu_home", icon_custom_emoji_id=BTN_ICON_HOME)],
         ]
     )
