@@ -144,6 +144,8 @@ from .keyboards import (
     BTN_ICON_PAY,
     batch_download_confirm_kb,
     cart_kb,
+    cart_edit_group_kb,
+    cart_edit_list_kb,
     catalog_sections_kb,
     help_menu_kb,
     cancel_flow_kb,
@@ -489,6 +491,7 @@ FSM_CALLBACK_WHITELIST = {
     AdminEditProductGroupStates.waiting_new_value.state: ("admin_product_group:",),
     ServiceOrderStates.waiting_recipient.state: ("service_order_cancel",),
     UserTopUpStates.waiting_receipt.state: ("cancel_topup_receipt",),
+    UserCartStates.waiting_edit_quantity.state: ("cart_edit_group:",),
     AdminBroadcastStates.waiting_text.state: ("admin_broadcast_send", "broadcast_confirm"),
     AdminCleanStates.waiting_action.state: ("clean_refresh:", "clean_confirm:"),
     AdminCleanStates.waiting_confirm.state: ("clean_execute:", "clean_back:"),
@@ -4353,6 +4356,153 @@ async def render_cart(query: CallbackQuery) -> None:
     )
 
 
+
+def _cart_edit_group_key(item) -> tuple[str, str, float, str]:
+    return (
+        str(item["title"] or ""),
+        str(item["country"] or ""),
+        float(item["price"]),
+        str(item["status"]),
+    )
+
+
+async def list_cart_edit_groups(user_id: int) -> list[dict[str, object]]:
+    grouped: dict[tuple[str, str, float, str], dict[str, object]] = {}
+    for item in await list_cart_items(user_id):
+        key = _cart_edit_group_key(item)
+        group = grouped.setdefault(
+            key,
+            {
+                "title": key[0],
+                "country": key[1],
+                "price": key[2],
+                "status": key[3],
+                "product_ids": [],
+            },
+        )
+        product_ids = group["product_ids"]
+        assert isinstance(product_ids, list)
+        product_ids.append(int(item["product_id"]))
+    return list(grouped.values())
+
+
+def cart_edit_label(group: dict[str, object]) -> str:
+    title = str(group["title"] or "\u0422\u043e\u0432\u0430\u0440").replace("\n", " ").strip()
+    if len(title) > 42:
+        title = f"{title[:39]}..."
+    count = len(group["product_ids"])
+    suffix = "" if group["status"] == "available" else " \u00b7 \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d"
+    return f"{title} \u00b7 {count} \u0448\u0442{suffix}"
+
+
+async def get_cart_edit_group(user_id: int, sample_product_id: int) -> dict[str, object] | None:
+    for group in await list_cart_edit_groups(user_id):
+        if sample_product_id in group["product_ids"]:
+            return group
+    return None
+
+
+async def build_cart_edit_group_view(
+    user_id: int,
+    sample_product_id: int,
+    page: int,
+) -> tuple[str, InlineKeyboardMarkup] | None:
+    group = await get_cart_edit_group(user_id, sample_product_id)
+    if not group:
+        return None
+    product_ids = group["product_ids"]
+    assert isinstance(product_ids, list)
+    quantity = len(product_ids)
+    available = group["status"] == "available"
+    max_quantity = quantity
+    if available:
+        stock_count, _in_cart_count, _available_to_add = await get_department_cart_capacity(user_id, sample_product_id)
+        max_quantity = max(quantity, stock_count)
+    status_text = "\u0432 \u043a\u043e\u0440\u0437\u0438\u043d\u0435" if available else "\u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d"
+    text = (
+        "<b>\u0418\u0437\u043c\u0435\u043d\u0435\u043d\u0438\u0435 \u043f\u043e\u0437\u0438\u0446\u0438\u0438</b>\n\n"
+        f"<b>{render_rich_text(group['title'])}</b>\n"
+        f"\u0421\u0442\u0440\u0430\u043d\u0430: <b>{html.escape(str(group['country']))}</b>\n"
+        f"\u0426\u0435\u043d\u0430 \u0437\u0430 \u0448\u0442\u0443\u043a\u0443: <b>{fmt_money(float(group['price']))}</b>\n"
+        f"\u0412 \u043a\u043e\u0440\u0437\u0438\u043d\u0435: <b>{quantity}</b> \u0448\u0442\n"
+        f"\u0421\u0443\u043c\u043c\u0430: <b>{fmt_money(float(group['price']) * quantity)}</b>\n"
+        f"\u0421\u0442\u0430\u0442\u0443\u0441: <b>{status_text}</b>"
+    )
+    if available:
+        text += f"\n\u041c\u043e\u0436\u043d\u043e \u0432\u044b\u0431\u0440\u0430\u0442\u044c: \u043e\u0442 <b>1</b> \u0434\u043e <b>{max_quantity}</b> \u0448\u0442."
+    else:
+        text += "\n\n\u041a\u043e\u043b\u0438\u0447\u0435\u0441\u0442\u0432\u043e \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u043e\u0433\u043e \u0442\u043e\u0432\u0430\u0440\u0430 \u043c\u0435\u043d\u044f\u0442\u044c \u043d\u0435\u043b\u044c\u0437\u044f. \u0415\u0433\u043e \u043c\u043e\u0436\u043d\u043e \u0442\u043e\u043b\u044c\u043a\u043e \u0443\u0431\u0440\u0430\u0442\u044c."
+    return text, cart_edit_group_kb(
+        sample_product_id,
+        quantity=quantity,
+        max_quantity=max_quantity,
+        page=page,
+        editable=available,
+    )
+
+
+async def render_cart_edit_list(query: CallbackQuery, page: int = 0) -> None:
+    groups = await list_cart_edit_groups(query.from_user.id)
+    if not groups:
+        await render_cart(query)
+        return
+    total_pages = max(1, math.ceil(len(groups) / PAGE_SIZE))
+    page = max(0, min(page, total_pages - 1))
+    visible = groups[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]
+    rows: list[list[InlineKeyboardButton]] = []
+    for group in visible:
+        product_ids = group["product_ids"]
+        assert isinstance(product_ids, list)
+        rows.append([
+            InlineKeyboardButton(
+                text=cart_edit_label(group),
+                callback_data=f"cart_edit_group:{product_ids[0]}:{page}",
+            )
+        ])
+    text = (
+        "<b>\u0418\u0437\u043c\u0435\u043d\u0435\u043d\u0438\u0435 \u043a\u043e\u0440\u0437\u0438\u043d\u044b</b>\n\n"
+        "\u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u043f\u043e\u0437\u0438\u0446\u0438\u044e: \u043c\u043e\u0436\u043d\u043e \u0438\u0437\u043c\u0435\u043d\u0438\u0442\u044c \u043a\u043e\u043b\u0438\u0447\u0435\u0441\u0442\u0432\u043e \u0438\u043b\u0438 \u0443\u0431\u0440\u0430\u0442\u044c \u0442\u043e\u0432\u0430\u0440."
+    )
+    await safe_edit(query.message, text, cart_edit_list_kb(rows, page=page, total_pages=total_pages))
+
+
+async def render_cart_edit_group(query: CallbackQuery, sample_product_id: int, page: int) -> bool:
+    view = await build_cart_edit_group_view(query.from_user.id, sample_product_id, page)
+    if not view:
+        await query.answer("\u041f\u043e\u0437\u0438\u0446\u0438\u044f \u0443\u0436\u0435 \u0438\u0437\u043c\u0435\u043d\u0438\u043b\u0430\u0441\u044c.", show_alert=True)
+        await render_cart_edit_list(query, page)
+        return False
+    text, markup = view
+    await safe_edit(query.message, text, markup)
+    return True
+
+
+async def set_cart_edit_group_quantity(user_id: int, sample_product_id: int, target_quantity: int) -> tuple[bool, str, int]:
+    group = await get_cart_edit_group(user_id, sample_product_id)
+    if not group:
+        return False, "not_found", 0
+    product_ids = group["product_ids"]
+    assert isinstance(product_ids, list)
+    current_quantity = len(product_ids)
+    if group["status"] != "available":
+        return False, "not_available", current_quantity
+    if target_quantity < 1:
+        return False, "minimum", current_quantity
+    stock_count, _in_cart_count, _available_to_add = await get_department_cart_capacity(user_id, sample_product_id)
+    if target_quantity > stock_count:
+        return False, "maximum", current_quantity
+    if target_quantity < current_quantity:
+        for product_id in product_ids[:current_quantity - target_quantity]:
+            await remove_product_from_cart(user_id, product_id)
+    elif target_quantity > current_quantity:
+        added, _reason = await add_product_group_quantity_to_cart(user_id, sample_product_id, target_quantity - current_quantity)
+        if added != target_quantity - current_quantity:
+            updated = await get_cart_edit_group(user_id, sample_product_id)
+            return False, "maximum", len(updated["product_ids"]) if updated else 0
+    updated = await get_cart_edit_group(user_id, sample_product_id)
+    return True, "updated", len(updated["product_ids"]) if updated else 0
+
+
 async def refresh_cart_unavailable_items(user_id: int) -> tuple[list[int], list[int]]:
     """Replace stale cart rows with currently available products from the same department."""
     replaced: list[int] = []
@@ -4584,6 +4734,160 @@ async def cart_add_group_manual_finish(message: Message, state: FSMContext):
         await message.answer("Этот тип товара закончился.", reply_markup=back_to_main_kb(is_admin(message.from_user.id)))
         return
     await message.answer("Товар не найден.", reply_markup=back_to_main_kb(is_admin(message.from_user.id)))
+
+
+@dp.callback_query(F.data.startswith("cart_edit_list:"))
+async def cart_edit_list(query: CallbackQuery, state: FSMContext):
+    await ensure_known_user(query)
+    try:
+        page = max(0, int(query.data.rsplit(":", 1)[1]))
+    except (TypeError, ValueError):
+        page = 0
+    await state.clear()
+    await query.answer()
+    await render_cart_edit_list(query, page)
+
+
+@dp.callback_query(F.data.startswith("cart_edit_group:"))
+async def cart_edit_group(query: CallbackQuery, state: FSMContext):
+    await ensure_known_user(query)
+    try:
+        _prefix, sample_id_raw, page_raw = query.data.split(":", 2)
+        sample_product_id = int(sample_id_raw)
+        page = max(0, int(page_raw))
+    except (TypeError, ValueError):
+        await query.answer("\u041d\u0435\u043a\u043e\u0440\u0440\u0435\u043a\u0442\u043d\u0430\u044f \u043f\u043e\u0437\u0438\u0446\u0438\u044f.", show_alert=True)
+        return
+    await state.clear()
+    await query.answer()
+    await render_cart_edit_group(query, sample_product_id, page)
+
+
+@dp.callback_query(F.data.startswith("cart_edit_qty:"))
+async def cart_edit_quantity(query: CallbackQuery):
+    await ensure_known_user(query)
+    try:
+        _prefix, sample_id_raw, page_raw, quantity_raw = query.data.split(":", 3)
+        sample_product_id = int(sample_id_raw)
+        page = max(0, int(page_raw))
+        target_quantity = int(quantity_raw)
+    except (TypeError, ValueError):
+        await query.answer("\u041d\u0435\u043a\u043e\u0440\u0440\u0435\u043a\u0442\u043d\u043e\u0435 \u043a\u043e\u043b\u0438\u0447\u0435\u0441\u0442\u0432\u043e.", show_alert=True)
+        return
+    ok, reason, current_quantity = await set_cart_edit_group_quantity(
+        query.from_user.id,
+        sample_product_id,
+        target_quantity,
+    )
+    if not ok:
+        messages = {
+            "not_found": "\u041f\u043e\u0437\u0438\u0446\u0438\u044f \u0443\u0436\u0435 \u0438\u0437\u043c\u0435\u043d\u0438\u043b\u0430\u0441\u044c.",
+            "not_available": "\u0422\u043e\u0432\u0430\u0440 \u0443\u0436\u0435 \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d.",
+            "minimum": "\u041c\u0438\u043d\u0438\u043c\u0430\u043b\u044c\u043d\u043e\u0435 \u043a\u043e\u043b\u0438\u0447\u0435\u0441\u0442\u0432\u043e \u2014 1.",
+            "maximum": f"\u0412 \u043a\u043e\u0440\u0437\u0438\u043d\u0435 \u043e\u0441\u0442\u0430\u043b\u043e\u0441\u044c {current_quantity} \u0448\u0442.: \u0431\u043e\u043b\u044c\u0448\u0435 \u0441\u0432\u043e\u0431\u043e\u0434\u043d\u044b\u0445 \u0442\u043e\u0432\u0430\u0440\u043e\u0432 \u043d\u0435\u0442.",
+        }
+        await query.answer(messages.get(reason, "\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0438\u0437\u043c\u0435\u043d\u0438\u0442\u044c \u043a\u043e\u0440\u0437\u0438\u043d\u0443."), show_alert=True)
+    else:
+        await query.answer("\u041a\u043e\u0440\u0437\u0438\u043d\u0430 \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0430.")
+    await render_cart_edit_group(query, sample_product_id, page)
+
+
+@dp.callback_query(F.data.startswith("cart_edit_manual:"))
+async def cart_edit_manual_start(query: CallbackQuery, state: FSMContext):
+    await ensure_known_user(query)
+    try:
+        _prefix, sample_id_raw, page_raw = query.data.split(":", 2)
+        sample_product_id = int(sample_id_raw)
+        page = max(0, int(page_raw))
+    except (TypeError, ValueError):
+        await query.answer("\u041d\u0435\u043a\u043e\u0440\u0440\u0435\u043a\u0442\u043d\u0430\u044f \u043f\u043e\u0437\u0438\u0446\u0438\u044f.", show_alert=True)
+        return
+    view = await build_cart_edit_group_view(query.from_user.id, sample_product_id, page)
+    if not view:
+        await query.answer("\u041f\u043e\u0437\u0438\u0446\u0438\u044f \u0443\u0436\u0435 \u0438\u0437\u043c\u0435\u043d\u0438\u043b\u0430\u0441\u044c.", show_alert=True)
+        await render_cart_edit_list(query, page)
+        return
+    await query.answer()
+    await state.update_data(
+        cart_edit_sample_id=sample_product_id,
+        cart_edit_page=page,
+        cart_edit_prompt_message_id=query.message.message_id,
+    )
+    await state.set_state(UserCartStates.waiting_edit_quantity)
+    await safe_edit(
+        query.message,
+        "<b>\u0418\u0437\u043c\u0435\u043d\u0435\u043d\u0438\u0435 \u043a\u043e\u043b\u0438\u0447\u0435\u0441\u0442\u0432\u0430</b>\n\n"
+        "\u041e\u0442\u043f\u0440\u0430\u0432\u044c\u0442\u0435 \u043d\u0443\u0436\u043d\u043e\u0435 \u043a\u043e\u043b\u0438\u0447\u0435\u0441\u0442\u0432\u043e \u0446\u0435\u043b\u044b\u043c \u0447\u0438\u0441\u043b\u043e\u043c.",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="\u041d\u0430\u0437\u0430\u0434 \u043a \u043f\u043e\u0437\u0438\u0446\u0438\u0438", callback_data=f"cart_edit_group:{sample_product_id}:{page}", icon_custom_emoji_id=BTN_ICON_BACK)],
+        ]),
+    )
+
+
+@dp.message(UserCartStates.waiting_edit_quantity)
+async def cart_edit_manual_finish(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+    if not text.isdigit() or int(text) < 1:
+        await message.answer("\u041e\u0442\u043f\u0440\u0430\u0432\u044c\u0442\u0435 \u043a\u043e\u043b\u0438\u0447\u0435\u0441\u0442\u0432\u043e \u0446\u0435\u043b\u044b\u043c \u0447\u0438\u0441\u043b\u043e\u043c \u043e\u0442 1.")
+        return
+    data = await state.get_data()
+    sample_product_id = int(data.get("cart_edit_sample_id") or 0)
+    page = max(0, int(data.get("cart_edit_page") or 0))
+    prompt_message_id = int(data.get("cart_edit_prompt_message_id") or 0)
+    ok, reason, current_quantity = await set_cart_edit_group_quantity(
+        message.from_user.id,
+        sample_product_id,
+        int(text),
+    )
+    if not ok:
+        if reason == "maximum":
+            await message.answer(f"\u041c\u043e\u0436\u043d\u043e \u043e\u0441\u0442\u0430\u0432\u0438\u0442\u044c \u043d\u0435 \u0431\u043e\u043b\u044c\u0448\u0435 <b>{current_quantity}</b> \u0448\u0442.")
+        elif reason == "not_available":
+            await state.clear()
+            await message.answer("\u0422\u043e\u0432\u0430\u0440 \u0443\u0436\u0435 \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d. \u0415\u0433\u043e \u043c\u043e\u0436\u043d\u043e \u0442\u043e\u043b\u044c\u043a\u043e \u0443\u0431\u0440\u0430\u0442\u044c \u0438\u0437 \u043a\u043e\u0440\u0437\u0438\u043d\u044b.", reply_markup=open_cart_kb())
+        else:
+            await state.clear()
+            await message.answer("\u041f\u043e\u0437\u0438\u0446\u0438\u044f \u0443\u0436\u0435 \u0438\u0437\u043c\u0435\u043d\u0438\u043b\u0430\u0441\u044c.", reply_markup=open_cart_kb())
+        return
+    await state.clear()
+    view = await build_cart_edit_group_view(message.from_user.id, sample_product_id, page)
+    if not view:
+        await message.answer("\u041a\u043e\u0440\u0437\u0438\u043d\u0430 \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0430.", reply_markup=open_cart_kb())
+        return
+    view_text, markup = view
+    try:
+        await bot.edit_message_text(
+            chat_id=message.chat.id,
+            message_id=prompt_message_id,
+            text=view_text,
+            reply_markup=markup,
+        )
+    except TelegramAPIError:
+        logger.warning("Could not restore cart edit screen | user=%s", message.from_user.id, exc_info=True)
+        await message.answer(view_text, reply_markup=markup)
+
+
+@dp.callback_query(F.data.startswith("cart_edit_remove:"))
+async def cart_edit_remove_group(query: CallbackQuery):
+    await ensure_known_user(query)
+    try:
+        _prefix, sample_id_raw, page_raw = query.data.split(":", 2)
+        sample_product_id = int(sample_id_raw)
+        page = max(0, int(page_raw))
+    except (TypeError, ValueError):
+        await query.answer("\u041d\u0435\u043a\u043e\u0440\u0440\u0435\u043a\u0442\u043d\u0430\u044f \u043f\u043e\u0437\u0438\u0446\u0438\u044f.", show_alert=True)
+        return
+    group = await get_cart_edit_group(query.from_user.id, sample_product_id)
+    if not group:
+        await query.answer("\u041f\u043e\u0437\u0438\u0446\u0438\u044f \u0443\u0436\u0435 \u0438\u0437\u043c\u0435\u043d\u0438\u043b\u0430\u0441\u044c.", show_alert=True)
+        await render_cart_edit_list(query, page)
+        return
+    product_ids = group["product_ids"]
+    assert isinstance(product_ids, list)
+    for product_id in product_ids:
+        await remove_product_from_cart(query.from_user.id, product_id)
+    await query.answer("\u041f\u043e\u0437\u0438\u0446\u0438\u044f \u0443\u0431\u0440\u0430\u043d\u0430 \u0438\u0437 \u043a\u043e\u0440\u0437\u0438\u043d\u044b.")
+    await render_cart_edit_list(query, page)
 
 
 @dp.callback_query(F.data.startswith("cart_remove:"))

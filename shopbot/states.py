@@ -64,6 +64,7 @@ class UserTopUpStates(StatesGroup):
 
 class UserCartStates(StatesGroup):
     waiting_group_quantity = State()
+    waiting_edit_quantity = State()
 
 
 class UserCatalogStates(StatesGroup):

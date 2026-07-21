@@ -150,11 +150,51 @@ def batch_download_confirm_kb(batch_id: str, page: int, file_type: str) -> Inlin
 def cart_kb(*, item_rows: list[list[InlineKeyboardButton]] | None = None, can_checkout: bool) -> InlineKeyboardMarkup:
     rows = list(item_rows or [])
     if can_checkout:
-        rows.append([InlineKeyboardButton(text="Очистить корзину", callback_data="cart_clear", icon_custom_emoji_id=BTN_ICON_CANCEL)])
-        rows.append([InlineKeyboardButton(text="Оплатить всё", callback_data="cart_checkout", icon_custom_emoji_id=BTN_ICON_PAY)])
-    rows.append([InlineKeyboardButton(text="В меню", callback_data="menu_home", icon_custom_emoji_id=BTN_ICON_HOME)])
+        rows.append([InlineKeyboardButton(text="\u0418\u0437\u043c\u0435\u043d\u0438\u0442\u044c", callback_data="cart_edit_list:0")])
+        rows.append([InlineKeyboardButton(text="\u041e\u0447\u0438\u0441\u0442\u0438\u0442\u044c \u043a\u043e\u0440\u0437\u0438\u043d\u0443", callback_data="cart_clear", icon_custom_emoji_id=BTN_ICON_CANCEL)])
+        rows.append([InlineKeyboardButton(text="\u041e\u043f\u043b\u0430\u0442\u0438\u0442\u044c \u0432\u0441\u0451", callback_data="cart_checkout", icon_custom_emoji_id=BTN_ICON_PAY)])
+    rows.append([InlineKeyboardButton(text="\u0412 \u043c\u0435\u043d\u044e", callback_data="menu_home", icon_custom_emoji_id=BTN_ICON_HOME)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
+
+def cart_edit_list_kb(
+    item_rows: list[list[InlineKeyboardButton]],
+    *,
+    page: int,
+    total_pages: int,
+) -> InlineKeyboardMarkup:
+    rows = list(item_rows)
+    if total_pages > 1:
+        nav: list[InlineKeyboardButton] = []
+        if page > 0:
+            nav.append(InlineKeyboardButton(text="<", callback_data=f"cart_edit_list:{page - 1}"))
+        nav.append(InlineKeyboardButton(text=f"{page + 1}/{total_pages}", callback_data="noop"))
+        if page + 1 < total_pages:
+            nav.append(InlineKeyboardButton(text=">", callback_data=f"cart_edit_list:{page + 1}"))
+        rows.append(nav)
+    rows.append([InlineKeyboardButton(text="\u041d\u0430\u0437\u0430\u0434 \u043a \u043a\u043e\u0440\u0437\u0438\u043d\u0435", callback_data="menu_cart", icon_custom_emoji_id=BTN_ICON_BACK)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def cart_edit_group_kb(
+    sample_product_id: int,
+    *,
+    quantity: int,
+    max_quantity: int,
+    page: int,
+    editable: bool,
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if editable:
+        rows.append([
+            InlineKeyboardButton(text="-", callback_data=f"cart_edit_qty:{sample_product_id}:{page}:{max(1, quantity - 1)}"),
+            InlineKeyboardButton(text=str(quantity), callback_data="noop"),
+            InlineKeyboardButton(text="+", callback_data=f"cart_edit_qty:{sample_product_id}:{page}:{min(max_quantity, quantity + 1)}"),
+        ])
+        rows.append([InlineKeyboardButton(text="\u0412\u0432\u0435\u0441\u0442\u0438 \u043a\u043e\u043b\u0438\u0447\u0435\u0441\u0442\u0432\u043e", callback_data=f"cart_edit_manual:{sample_product_id}:{page}")])
+    rows.append([InlineKeyboardButton(text="\u0423\u0431\u0440\u0430\u0442\u044c \u0438\u0437 \u043a\u043e\u0440\u0437\u0438\u043d\u044b", callback_data=f"cart_edit_remove:{sample_product_id}:{page}", icon_custom_emoji_id=BTN_ICON_CANCEL)])
+    rows.append([InlineKeyboardButton(text="\u041d\u0430\u0437\u0430\u0434 \u043a \u043f\u043e\u0437\u0438\u0446\u0438\u044f\u043c", callback_data=f"cart_edit_list:{page}", icon_custom_emoji_id=BTN_ICON_BACK)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def open_cart_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
