@@ -1174,6 +1174,8 @@ async def log_product_upload(
         chunk: list[str] = []
         chunk_size = 0
         for line in lines:
+            if len(line) > 3000:
+                line = f"{line[:2997]}..."
             line_size = len(line) + 1
             if chunk and chunk_size + line_size > 3500:
                 await bot.send_message(LOG_CHANNEL_ID, "\n".join(chunk))
@@ -4683,7 +4685,8 @@ async def set_cart_edit_group_quantity(user_id: int, sample_product_id: int, tar
     if target_quantity > stock_count:
         return False, "maximum", current_quantity
     if target_quantity < current_quantity:
-        for product_id in product_ids[:current_quantity - target_quantity]:
+        # Keep the product ID used by the open editor stable while reducing the group.
+        for product_id in product_ids[-(current_quantity - target_quantity):]:
             await remove_product_from_cart(user_id, product_id)
     elif target_quantity > current_quantity:
         added, _reason = await add_product_group_quantity_to_cart(user_id, sample_product_id, target_quantity - current_quantity)
@@ -6472,8 +6475,12 @@ async def admin_active_export_run(query: CallbackQuery):
             "<b>\u0421\u0442\u0430\u0442\u0443\u0441\u044b:</b> \u0431\u0435\u0437 \u0438\u0437\u043c\u0435\u043d\u0435\u043d\u0438\u0439"
         )
         if errors:
+            error_preview = [
+                str(error) if len(str(error)) <= 160 else f"{str(error)[:157]}..."
+                for error in errors[:5]
+            ]
             caption += "\n\n<b>\u041f\u0440\u043e\u043f\u0443\u0449\u0435\u043d\u043e:</b>\n" + "\n".join(
-                f"\u2022 {html.escape(str(error))}" for error in errors[:5]
+                f"\u2022 {html.escape(error)}" for error in error_preview
             )
             if len(errors) > 5:
                 caption += f"\n\u2022 ... \u0438 \u0435\u0449\u0451 {len(errors) - 5}"
