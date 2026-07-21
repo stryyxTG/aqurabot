@@ -490,7 +490,7 @@ FSM_CALLBACK_WHITELIST = {
 
 
 def is_fsm_callback_allowed(current_state: str, callback_data: str) -> bool:
-    if callback_data == "agreement_accept":
+    if callback_data == "agreement_accept" or callback_data.startswith("check_pay:"):
         return True
     if callback_data.startswith("cancel_flow:"):
         return True
@@ -3674,7 +3674,8 @@ async def call_crypto_pay(method: str, params: dict = None) -> dict:
     url = f"https://pay.crypt.bot/api/{method}"
     headers = {"Crypto-Pay-API-Token": settings.cryptopay_token}
     try:
-        async with aiohttp.ClientSession() as session:
+        timeout = aiohttp.ClientTimeout(total=20)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(url, json=params, headers=headers) as resp:
                 try:
                     payload = await resp.json()
@@ -3703,6 +3704,15 @@ def crypto_invoice_fiat_matches(invoice: dict, expected_fiat: str) -> bool:
     if not api_fiat:
         return True
     return api_fiat == (expected_fiat or "").strip().upper()
+
+
+def crypto_invoice_kb(invoice_id: str, pay_url: str | None) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if pay_url:
+        rows.append([InlineKeyboardButton(text="\u041e\u043f\u043b\u0430\u0442\u0438\u0442\u044c", url=pay_url, icon_custom_emoji_id=BTN_ICON_PAY)])
+    rows.append([InlineKeyboardButton(text="\u041f\u0440\u043e\u0432\u0435\u0440\u0438\u0442\u044c \u043e\u043f\u043b\u0430\u0442\u0443", callback_data=f"check_pay:{invoice_id}", icon_custom_emoji_id=BTN_ICON_CHECK)])
+    rows.append([InlineKeyboardButton(text="\u0412 \u043c\u0435\u043d\u044e", callback_data="menu_home", icon_custom_emoji_id=BTN_ICON_BACK)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 @dp.callback_query(F.data == "user_topup_start")
@@ -3848,11 +3858,7 @@ async def user_topup_amount(message: Message, state: FSMContext):
         "Откройте счет в Crypto Bot и оплатите удобной криптовалютой. "
         f"После оплаты нажмите проверку, {ICON_COIN} баланс обновится автоматически."
     )
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Оплатить", url=pay_url, icon_custom_emoji_id=BTN_ICON_PAY)],
-        [InlineKeyboardButton(text="Проверить оплату", callback_data=f"check_pay:{invoice_id}", icon_custom_emoji_id=BTN_ICON_CHECK)],
-        [InlineKeyboardButton(text="Отменить", callback_data="menu_home", icon_custom_emoji_id=BTN_ICON_CANCEL)]
-    ])
+    kb = crypto_invoice_kb(invoice_id, pay_url)
     await message.answer(text, reply_markup=kb)
     await state.clear()
 
@@ -3932,78 +3938,72 @@ async def user_topup_receipt(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("check_pay:"))
 async def check_pay_callback(query: CallbackQuery):
+    await ensure_known_user(query)
+    await query.answer("\u041f\u0440\u043e\u0432\u0435\u0440\u044f\u044e \u043e\u043f\u043b\u0430\u0442\u0443...")
+    main_kb = back_to_main_kb(is_admin(query.from_user.id))
     if not FEATURE_TOPUP_CRYPTO:
-        await query.answer("Crypto Bot временно недоступен.", show_alert=True)
+        await safe_edit(query.message, "<b>Crypto Bot \u0432\u0440\u0435\u043c\u0435\u043d\u043d\u043e \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d.</b>", main_kb)
         return
+
     parts = (query.data or "").split(":", 2)
     if len(parts) < 2 or not parts[1].strip():
-        await query.answer("Некорректный счет.", show_alert=True)
+        await safe_edit(query.message, "<b>\u041d\u0435\u043a\u043e\u0440\u0440\u0435\u043a\u0442\u043d\u044b\u0439 \u0441\u0447\u0435\u0442.</b>", main_kb)
         return
 
     invoice_id = parts[1].strip()
-    stored_invoice = await get_crypto_invoice(invoice_id)
-    if not stored_invoice:
-        logger.warning("CryptoPay invoice check without local invoice: invoice=%s user=%s", invoice_id, query.from_user.id)
-        await query.answer("Счет не найден. Создайте новое пополнение.", show_alert=True)
+    stored = await get_crypto_invoice(invoice_id)
+    if not stored:
+        logger.warning("CryptoPay invoice check without local invoice | invoice=%s | user=%s", invoice_id, query.from_user.id)
+        await safe_edit(query.message, "<b>\u0421\u0447\u0435\u0442 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d.</b> \u0421\u043e\u0437\u0434\u0430\u0439\u0442\u0435 \u043d\u043e\u0432\u043e\u0435 \u043f\u043e\u043f\u043e\u043b\u043d\u0435\u043d\u0438\u0435.", main_kb)
+        return
+    if int(stored["user_id"]) != query.from_user.id:
+        logger.warning("CryptoPay invoice ownership mismatch | invoice=%s | owner=%s | checker=%s", invoice_id, stored["user_id"], query.from_user.id)
+        await safe_edit(query.message, "<b>\u042d\u0442\u043e \u043d\u0435 \u0432\u0430\u0448 \u0441\u0447\u0435\u0442.</b>", main_kb)
         return
 
-    invoice_user_id = int(stored_invoice["user_id"])
-    if invoice_user_id != query.from_user.id:
-        logger.warning(
-            "CryptoPay invoice ownership mismatch: invoice=%s owner=%s checker=%s",
-            invoice_id,
-            invoice_user_id,
-            query.from_user.id,
-        )
-        await query.answer("Это не ваш счет.", show_alert=True)
+    amount = float(stored["amount"])
+    fiat = (stored["fiat"] or settings.cryptopay_fiat).upper()
+    pay_url = str(stored["pay_url"] or "")
+    response = await call_crypto_pay("getInvoices", {"invoice_ids": invoice_id})
+    invoices = ((response.get("result") or {}).get("items") or []) if isinstance(response, dict) else []
+    if not response.get("ok") or not invoices:
+        logger.warning("CryptoPay invoice check failed | invoice=%s | response=%s", invoice_id, response)
+        await safe_edit(query.message, f"{ICON_NOTICE} <b>\u041d\u0435\u0442 \u0441\u0432\u044f\u0437\u0438 \u0441 Crypto Bot.</b>\n\n\u041f\u043e\u0432\u0442\u043e\u0440\u0438\u0442\u0435 \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0443 \u0447\u0435\u0440\u0435\u0437 \u043c\u0438\u043d\u0443\u0442\u0443.", crypto_invoice_kb(invoice_id, pay_url))
         return
 
-    amount = float(stored_invoice["amount"])
-    fiat = (stored_invoice["fiat"] or settings.cryptopay_fiat).upper()
-    
-    res = await call_crypto_pay("getInvoices", {"invoice_ids": invoice_id})
-    items = ((res.get("result") or {}).get("items") or []) if isinstance(res, dict) else []
-    if not res.get("ok") or not items:
-        logger.warning("CryptoPay invoice check failed: invoice=%s response=%s", invoice_id, res)
-        await query.answer("Счет не найден.", show_alert=True)
-        return
-
-    invoice = items[0]
+    invoice = invoices[0]
     if str(invoice.get("invoice_id") or invoice_id) != invoice_id:
-        logger.error("CryptoPay returned different invoice: requested=%s payload=%s", invoice_id, invoice)
-        await query.answer("Ошибка проверки счета. Напишите в поддержку.", show_alert=True)
+        logger.error("CryptoPay returned different invoice | requested=%s | payload=%s", invoice_id, invoice)
+        await safe_edit(query.message, "<b>\u041e\u0448\u0438\u0431\u043a\u0430 \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0438 \u0441\u0447\u0435\u0442\u0430.</b> \u041d\u0430\u043f\u0438\u0448\u0438\u0442\u0435 \u0432 \u043f\u043e\u0434\u0434\u0435\u0440\u0436\u043a\u0443.", support_kb())
         return
 
-    status = invoice.get("status")
-
+    status = str(invoice.get("status") or "created").lower()
     if status == "paid":
         if not crypto_invoice_amount_matches(invoice, amount) or not crypto_invoice_fiat_matches(invoice, fiat):
-            logger.error(
-                "CryptoPay invoice amount mismatch: invoice=%s expected=%s %s payload=%s",
-                invoice_id,
-                amount,
-                fiat,
-                invoice,
-            )
-            await query.answer("Сумма счета не совпала. Напишите в поддержку.", show_alert=True)
+            logger.error("CryptoPay invoice amount mismatch | invoice=%s | expected=%s %s | payload=%s", invoice_id, amount, fiat, invoice)
+            await safe_edit(query.message, "<b>\u0421\u0443\u043c\u043c\u0430 \u0441\u0447\u0435\u0442\u0430 \u043d\u0435 \u0441\u043e\u0432\u043f\u0430\u043b\u0430.</b> \u041d\u0430\u043f\u0438\u0448\u0438\u0442\u0435 \u0432 \u043f\u043e\u0434\u0434\u0435\u0440\u0436\u043a\u0443.", support_kb())
             return
+        try:
+            await mark_crypto_invoice_status(invoice_id, "paid", str(invoice.get("paid_at") or ""))
+            processed, balance = await process_crypto_topup(invoice_id, int(stored["user_id"]), amount)
+        except Exception:
+            logger.exception("CryptoPay topup processing failed | invoice=%s | user=%s", invoice_id, query.from_user.id)
+            await safe_edit(query.message, f"{ICON_NOTICE} <b>\u041e\u043f\u043b\u0430\u0442\u0430 \u043d\u0430\u0439\u0434\u0435\u043d\u0430, \u043d\u043e \u0437\u0430\u0447\u0438\u0441\u043b\u0435\u043d\u0438\u0435 \u0437\u0430\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u0435\u0442\u0441\u044f.</b>\n\n\u041f\u043e\u0432\u0442\u043e\u0440\u0438\u0442\u0435 \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0443 \u0447\u0435\u0440\u0435\u0437 \u043c\u0438\u043d\u0443\u0442\u0443.", crypto_invoice_kb(invoice_id, pay_url))
+            return
+        if processed:
+            await log_purchase("crypto_topup", user_id=int(stored["user_id"]), invoice_id=invoice_id, amount=amount)
+        else:
+            balance = await get_balance(int(stored["user_id"]))
+        await safe_edit(query.message, f"{ICON_SUCCESS} <b>\u041e\u043f\u043b\u0430\u0442\u0430 \u043f\u043e\u043b\u0443\u0447\u0435\u043d\u0430</b>\n\n{ICON_COIN} \u0411\u0430\u043b\u0430\u043d\u0441 \u043f\u043e\u043f\u043e\u043b\u043d\u0435\u043d \u043d\u0430 <b>{fmt_money(amount)}</b>.\n\u0422\u0435\u043a\u0443\u0449\u0438\u0439 \u0431\u0430\u043b\u0430\u043d\u0441: <b>{fmt_money(balance)}</b>.", main_kb)
+        return
 
-        await mark_crypto_invoice_status(invoice_id, "paid", str(invoice.get("paid_at") or ""))
-        processed, _new_balance = await process_crypto_topup(invoice_id, invoice_user_id, amount)
-        if not processed:
-            await query.answer("Этот счет уже был зачислен.", show_alert=True)
-            await show_home(query)
-            return
-        await log_purchase("crypto_topup", user_id=invoice_user_id, invoice_id=invoice_id, amount=amount)
-        await query.answer("Оплата получена. Баланс пополнен.", show_alert=True)
-        await show_home(query)
-    elif status == "expired":
+    if status == "expired":
         await mark_crypto_invoice_status(invoice_id, "expired")
-        await query.answer("Время оплаты счета истекло.", show_alert=True)
-        await safe_edit(query.message, "<b>Счет просрочен.</b> Попробуйте создать новый.", back_to_main_kb(is_admin(query.from_user.id)))
-    else:
-        await mark_crypto_invoice_status(invoice_id, str(status or "created"))
-        await query.answer("Оплата еще не поступила. Попробуйте через минуту.", show_alert=True)
+        await safe_edit(query.message, "<b>\u0421\u0447\u0435\u0442 \u043f\u0440\u043e\u0441\u0440\u043e\u0447\u0435\u043d.</b> \u0421\u043e\u0437\u0434\u0430\u0439\u0442\u0435 \u043d\u043e\u0432\u043e\u0435 \u043f\u043e\u043f\u043e\u043b\u043d\u0435\u043d\u0438\u0435.", main_kb)
+        return
+
+    await mark_crypto_invoice_status(invoice_id, status)
+    await safe_edit(query.message, f"{ICON_CRYPTO} <b>\u0421\u0447\u0435\u0442 \u0435\u0449\u0435 \u043e\u0436\u0438\u0434\u0430\u0435\u0442 \u043e\u043f\u043b\u0430\u0442\u044b.</b>\n\n\u0415\u0441\u043b\u0438 \u0432\u044b \u0442\u043e\u043b\u044c\u043a\u043e \u043e\u043f\u043b\u0430\u0442\u0438\u043b\u0438, \u043f\u043e\u0434\u043e\u0436\u0434\u0438\u0442\u0435 \u043e\u043a\u043e\u043b\u043e \u043c\u0438\u043d\u0443\u0442\u044b \u0438 \u043d\u0430\u0436\u043c\u0438\u0442\u0435 \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0443 \u0441\u043d\u043e\u0432\u0430.", crypto_invoice_kb(invoice_id, pay_url))
 
 
 @dp.callback_query(F.data.startswith("topup_approve:"))
