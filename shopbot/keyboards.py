@@ -553,8 +553,28 @@ def admin_catalog_kb(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def admin_country_kb(country_id: int, group_rows: list[list[InlineKeyboardButton]] | None = None) -> InlineKeyboardMarkup:
+def admin_country_kb(
+    country_id: int,
+    group_rows: list[list[InlineKeyboardButton]] | None = None,
+    *,
+    page: int = 0,
+    total_pages: int = 1,
+    sort_callback: str | None = None,
+    clear_sort_callback: str | None = None,
+) -> InlineKeyboardMarkup:
     rows = list(group_rows or [])
+    if total_pages > 1:
+        nav = []
+        if page > 0:
+            nav.append(InlineKeyboardButton(text="<", callback_data=f"admin_country:{country_id}:{page - 1}"))
+        nav.append(InlineKeyboardButton(text=f"{page + 1}/{total_pages}", callback_data="noop"))
+        if page + 1 < total_pages:
+            nav.append(InlineKeyboardButton(text=">", callback_data=f"admin_country:{country_id}:{page + 1}"))
+        rows.append(nav)
+    if sort_callback:
+        rows.append([InlineKeyboardButton(text="Sort", callback_data=sort_callback)])
+    if clear_sort_callback:
+        rows.append([InlineKeyboardButton(text="Reset sort", callback_data=clear_sort_callback)])
     rows.extend(
         [
             [InlineKeyboardButton(text="Создать отдел", callback_data=f"admin_department_create:{country_id}")],

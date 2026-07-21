@@ -275,8 +275,10 @@ dp = Dispatcher(storage=MemoryStorage())
 session_manager = ShopSessionManager(settings)
 country_search_cache: dict[int, str] = {}
 catalog_country_sort_modes: dict[int, str] = {}
+catalog_group_sort_modes: dict[int, str] = {}
 admin_catalog_search_cache: dict[int, str] = {}
 admin_catalog_sort_modes: dict[int, str] = {}
+admin_group_sort_modes: dict[int, str] = {}
 admin_stock_search_cache: dict[int, str] = {}
 admin_stock_sort_modes: dict[int, str] = {}
 
@@ -2306,6 +2308,40 @@ def catalog_filter_menu_text(sort_mode: str | None) -> str:
         "Выберите, как показать страны в каталоге."
         f"{current_text}"
     )
+
+
+def format_product_group_sort(sort_mode: str | None) -> str:
+    labels = {
+        "created_asc": "oldest first",
+        "created_desc": "newest first",
+        "qty_asc": "fewest items first",
+        "qty_desc": "most items first",
+    }
+    label = labels.get(str(sort_mode or ""))
+    return f" | <b>Order:</b> {label}" if label else ""
+
+
+def product_group_sort_menu_text(sort_mode: str | None) -> str:
+    current = format_product_group_sort(sort_mode) or " <b>Order:</b> department creation date (oldest first)"
+    return "<b>Department order</b> Choose how departments are displayed." + current
+
+
+def product_group_sort_menu_kb(*, prefix: str, scope: str, page: int, sort_mode: str | None, back_callback: str) -> InlineKeyboardMarkup:
+    mode = str(sort_mode or "")
+    rows = [
+        [
+            InlineKeyboardButton(text="Date: old first" + (" *" if mode == "created_asc" else ""), callback_data=f"{prefix}_set:{scope}:{page}:created_asc"),
+            InlineKeyboardButton(text="Date: new first" + (" *" if mode == "created_desc" else ""), callback_data=f"{prefix}_set:{scope}:{page}:created_desc"),
+        ],
+        [
+            InlineKeyboardButton(text="Qty: low first" + (" *" if mode == "qty_asc" else ""), callback_data=f"{prefix}_set:{scope}:{page}:qty_asc"),
+            InlineKeyboardButton(text="Qty: high first" + (" *" if mode == "qty_desc" else ""), callback_data=f"{prefix}_set:{scope}:{page}:qty_desc"),
+        ],
+    ]
+    if mode:
+        rows.append([InlineKeyboardButton(text="Reset sort", callback_data=f"{prefix}_clear:{scope}:{page}", icon_custom_emoji_id=BTN_ICON_CANCEL)])
+    rows.append([InlineKeyboardButton(text="Back", callback_data=back_callback, icon_custom_emoji_id=BTN_ICON_BACK)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def admin_stock_sort_menu_kb(sort_mode: str | None) -> InlineKeyboardMarkup:
@@ -4837,7 +4873,7 @@ async def my_purchase_detail(query: CallbackQuery):
 async def build_product_list_content(user_id: int, *, country_id: int | None, page: int) -> tuple[str, InlineKeyboardMarkup]:
     country = None
     active_country_names: set[str] | None = None
-    _ = user_id
+    sort_mode = catalog_group_sort_modes.get(user_id)
     if country_id is not None:
         country_row = await get_catalog_country(country_id)
         if not country_row:
@@ -4846,9 +4882,12 @@ async def build_product_list_content(user_id: int, *, country_id: int | None, pa
     else:
         active_country_names = {row["name"] for row in await list_catalog_countries()}
     if active_country_names is None:
-        all_items = await list_product_departments(country=country, limit=100000, offset=0)
+        all_items = await list_product_departments(country=country, limit=100000, offset=0, sort_mode=sort_mode)
     else:
-        all_items = [item for item in await list_product_departments(limit=1000) if item["country"] in active_country_names]
+        all_items = [
+            item for item in await list_product_departments(limit=100000, offset=0, sort_mode=sort_mode)
+            if item["country"] in active_country_names
+        ]
     total = len(all_items)
     page, total_pages = clamp_page(page, total, PAGE_SIZE)
     offset = page * PAGE_SIZE
@@ -4877,6 +4916,8 @@ async def build_product_list_content(user_id: int, *, country_id: int | None, pa
             f"<b>Типов найдено:</b> {total}"
         )
     prefix = "catalog_all" if country_id is None else f"catalog_country:{country_id}:"
+    scope = "all" if country_id is None else str(country_id)
+    text += format_product_group_sort(sort_mode)
     return (
         text,
         product_list_kb(
@@ -4885,6 +4926,8 @@ async def build_product_list_content(user_id: int, *, country_id: int | None, pa
             page=page,
             total_pages=total_pages,
             back_callback="catalog_accounts",
+            filter_callback=f"catalog_group_sort:{scope}:{page}",
+            clear_filter_callback=f"catalog_group_sort_clear:{scope}:{page}" if sort_mode else None,
         ),
     )
 
@@ -4968,6 +5011,64 @@ async def catalog_filter_clear_menu(query: CallbackQuery, state: FSMContext):
     catalog_country_sort_modes.pop(query.from_user.id, None)
     await query.answer("Сортировка сброшена.")
     await safe_edit(query.message, catalog_filter_menu_text(None), catalog_filter_menu_kb(None))
+
+
+@dp.callback_query(F.data.startswith("catalog_group_sort:"))
+async def catalog_group_sort_menu(query: CallbackQuery, state: FSMContext):
+    await ensure_known_user(query)
+    await query.answer()
+    await state.clear()
+    try:
+        _, scope, page_raw = (query.data or "").split(":", 2)
+        page = max(0, int(page_raw))
+    except ValueError:
+        await query.answer("Sort not found.", show_alert=True)
+        return
+    country_id = None if scope == "all" else int(scope)
+    await safe_edit(
+        query.message,
+        product_group_sort_menu_text(catalog_group_sort_modes.get(query.from_user.id)),
+        product_group_sort_menu_kb(
+            prefix="catalog_group_sort",
+            scope=scope,
+            page=page,
+            sort_mode=catalog_group_sort_modes.get(query.from_user.id),
+            back_callback=(f"catalog_all_{page}" if country_id is None else f"catalog_country:{country_id}:{page}"),
+        ),
+    )
+
+
+@dp.callback_query(F.data.startswith("catalog_group_sort_set:"))
+async def catalog_group_sort_set(query: CallbackQuery, state: FSMContext):
+    await ensure_known_user(query)
+    await query.answer()
+    await state.clear()
+    try:
+        _, scope, page_raw, sort_mode = (query.data or "").split(":", 3)
+        page = max(0, int(page_raw))
+    except ValueError:
+        await query.answer("Sort not found.", show_alert=True)
+        return
+    if sort_mode not in {"created_asc", "created_desc", "qty_asc", "qty_desc"}:
+        await query.answer("Sort not found.", show_alert=True)
+        return
+    catalog_group_sort_modes[query.from_user.id] = sort_mode
+    await _render_product_list(query, country_id=None if scope == "all" else int(scope), page=page)
+
+
+@dp.callback_query(F.data.startswith("catalog_group_sort_clear:"))
+async def catalog_group_sort_clear(query: CallbackQuery, state: FSMContext):
+    await ensure_known_user(query)
+    await query.answer("Sort reset.")
+    await state.clear()
+    try:
+        _, scope, page_raw = (query.data or "").split(":", 2)
+        page = max(0, int(page_raw))
+    except ValueError:
+        await query.answer("Sort not found.", show_alert=True)
+        return
+    catalog_group_sort_modes.pop(query.from_user.id, None)
+    await _render_product_list(query, country_id=None if scope == "all" else int(scope), page=page)
 
 
 @dp.callback_query(F.data.startswith("product_group:"))
@@ -6843,13 +6944,82 @@ async def admin_catalog_sort_clear(query: CallbackQuery, state: FSMContext):
     await safe_edit(query.message, admin_catalog_sort_menu_text(None), admin_catalog_sort_menu_kb(None))
 
 
-async def render_admin_country(message: Message, country_id: int) -> None:
+@dp.callback_query(F.data.startswith("admin_group_sort:"))
+async def admin_group_sort_menu(query: CallbackQuery, state: FSMContext):
+    await ensure_known_user(query)
+    await query.answer()
+    if not is_admin(query.from_user.id):
+        return
+    await state.clear()
+    try:
+        _, country_id_raw, page_raw = (query.data or "").split(":", 2)
+        country_id = int(country_id_raw)
+        page = max(0, int(page_raw))
+    except ValueError:
+        await query.answer("Sort not found.", show_alert=True)
+        return
+    await safe_edit(
+        query.message,
+        product_group_sort_menu_text(admin_group_sort_modes.get(query.from_user.id)),
+        product_group_sort_menu_kb(
+            prefix="admin_group_sort",
+            scope=str(country_id),
+            page=page,
+            sort_mode=admin_group_sort_modes.get(query.from_user.id),
+            back_callback=f"admin_country:{country_id}:{page}",
+        ),
+    )
+
+
+@dp.callback_query(F.data.startswith("admin_group_sort_set:"))
+async def admin_group_sort_set(query: CallbackQuery, state: FSMContext):
+    await ensure_known_user(query)
+    await query.answer()
+    if not is_admin(query.from_user.id):
+        return
+    await state.clear()
+    try:
+        _, country_id_raw, page_raw, sort_mode = (query.data or "").split(":", 3)
+        country_id = int(country_id_raw)
+        page = max(0, int(page_raw))
+    except ValueError:
+        await query.answer("Sort not found.", show_alert=True)
+        return
+    if sort_mode not in {"created_asc", "created_desc", "qty_asc", "qty_desc"}:
+        await query.answer("Sort not found.", show_alert=True)
+        return
+    admin_group_sort_modes[query.from_user.id] = sort_mode
+    await render_admin_country(query.message, country_id, user_id=query.from_user.id, page=page)
+
+
+@dp.callback_query(F.data.startswith("admin_group_sort_clear:"))
+async def admin_group_sort_clear(query: CallbackQuery, state: FSMContext):
+    await ensure_known_user(query)
+    await query.answer("Sort reset.")
+    if not is_admin(query.from_user.id):
+        return
+    await state.clear()
+    try:
+        _, country_id_raw, page_raw = (query.data or "").split(":", 2)
+        country_id = int(country_id_raw)
+        page = max(0, int(page_raw))
+    except ValueError:
+        await query.answer("Sort not found.", show_alert=True)
+        return
+    admin_group_sort_modes.pop(query.from_user.id, None)
+    await render_admin_country(query.message, country_id, user_id=query.from_user.id, page=page)
+
+
+async def render_admin_country(message: Message, country_id: int, *, user_id: int | None = None, page: int = 0) -> None:
     country = await get_catalog_country(country_id)
     if not country:
         await safe_edit(message, "Кнопка страны не найдена.", await build_admin_catalog_keyboard())
         return
+    sort_mode = admin_group_sort_modes.get(user_id) if user_id is not None else None
     total = await count_products(country=country["name"])
-    groups = await list_product_departments(country=country["name"], limit=20)
+    all_groups = await list_product_departments(country=country["name"], limit=100000, sort_mode=sort_mode)
+    page, total_pages = clamp_page(page, len(all_groups), PAGE_SIZE)
+    groups = all_groups[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]
     group_rows = []
     for group in groups:
         stock_count = int(group["stock_count"] or 0)
@@ -6866,9 +7036,20 @@ async def render_admin_country(message: Message, country_id: int) -> None:
         f"<b>Флаг:</b> {html.escape(country['icon_text'] or 'не задан')}\n"
         f"<b>Premium-флаг:</b> <code>{html.escape(country['icon_custom_emoji_id'] or 'не задан')}</code>\n"
         f"<b>В наличии:</b> {total}\n"
-        f"<b>Типов товаров:</b> {len(groups)}"
+        f"<b>Типов товаров:</b> {len(all_groups)}"
     )
-    await safe_edit(message, text, admin_country_kb(country_id, group_rows))
+    await safe_edit(
+        message,
+        text,
+        admin_country_kb(
+            country_id,
+            group_rows,
+            page=page,
+            total_pages=total_pages,
+            sort_callback=f"admin_group_sort:{country_id}:{page}",
+            clear_sort_callback=f"admin_group_sort_clear:{country_id}:{page}" if sort_mode else None,
+        ),
+    )
 
 
 @dp.callback_query(F.data.startswith("admin_country:"))
@@ -6877,8 +7058,14 @@ async def admin_country_view(query: CallbackQuery):
     await query.answer()
     if not is_admin(query.from_user.id):
         return
-    country_id = int(query.data.rsplit(":", 1)[1])
-    await render_admin_country(query.message, country_id)
+    parts = (query.data or "").split(":")
+    try:
+        country_id = int(parts[1])
+        page = max(0, int(parts[2])) if len(parts) > 2 else 0
+    except (IndexError, ValueError):
+        await query.answer("Country not found.", show_alert=True)
+        return
+    await render_admin_country(query.message, country_id, user_id=query.from_user.id, page=page)
 
 
 @dp.callback_query(F.data.startswith("admin_department_create:"))

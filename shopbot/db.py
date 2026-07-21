@@ -1138,7 +1138,13 @@ async def get_product_group(sample_product_id: int, *, status: str = "available"
             return await cursor.fetchone()
 
 
-async def list_product_departments(*, country: str | None = None, limit: int = 50, offset: int = 0):
+async def list_product_departments(
+    *,
+    country: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    sort_mode: str | None = None,
+):
     query = """
         SELECT
             MIN(product_id) AS sample_product_id,
@@ -1167,7 +1173,8 @@ async def list_product_departments(*, country: str | None = None, limit: int = 5
                 ORDER BY p3.product_id DESC
                 LIMIT 1
             ) AS extra_code,
-            MAX(product_id) AS last_product_id
+            MAX(product_id) AS last_product_id,
+            MIN(created_at) AS group_created_at
         FROM products p
         WHERE status != 'removed'
           AND NOT EXISTS (
@@ -1196,7 +1203,8 @@ async def list_product_departments(*, country: str | None = None, limit: int = 5
                 0 AS total_count,
                 d.description,
                 d.extra_code,
-                0 AS last_product_id
+                0 AS last_product_id,
+                d.created_at AS group_created_at
             FROM catalog_departments d
             JOIN catalog_countries c ON c.country_id = d.country_id
             WHERE d.is_active = 1
@@ -1223,12 +1231,20 @@ async def list_product_departments(*, country: str | None = None, limit: int = 5
             row["description"] = base["description"]
         if base.get("extra_code") and not row.get("extra_code"):
             row["extra_code"] = base["extra_code"]
+        if base.get("group_created_at"):
+            row["group_created_at"] = base["group_created_at"]
         merged[key] = row
-    rows = sorted(
-        merged.values(),
-        key=lambda row: (int(row.get("last_product_id") or 0), row["country"].lower(), row["title"].lower()),
-        reverse=True,
-    )
+    rows = list(merged.values())
+    mode = str(sort_mode or "created_asc")
+    created_key = lambda row: (str(row.get("group_created_at") or ""), int(row.get("sample_product_id") or 0))
+    if mode == "created_desc":
+        rows.sort(key=created_key, reverse=True)
+    elif mode == "qty_asc":
+        rows.sort(key=lambda row: (int(row.get("stock_count") or 0), *created_key(row)))
+    elif mode == "qty_desc":
+        rows.sort(key=lambda row: (-int(row.get("stock_count") or 0), *created_key(row)))
+    else:
+        rows.sort(key=created_key)
     return rows[offset:offset + limit]
 
 
