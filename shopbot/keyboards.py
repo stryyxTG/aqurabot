@@ -385,9 +385,6 @@ def product_list_kb(
 
 def product_detail_kb(product_id: int, *, can_buy: bool, back_callback: str, can_claim: bool = False) -> InlineKeyboardMarkup:
     rows = []
-    if can_claim:
-        claim_token = admin_product_back_token(back_callback)
-        rows.append([InlineKeyboardButton(text="Забрать товар", callback_data=f"admin_claim_ask:{product_id}:{claim_token}")])
     if can_buy:
         rows.append([InlineKeyboardButton(text="Купить", callback_data=f"buy_{product_id}")])
         rows.append([InlineKeyboardButton(text="Добавить в корзину", callback_data=f"cart_add:{product_id}")])
@@ -822,8 +819,6 @@ def admin_product_detail_kb(
             InlineKeyboardButton(text="tdata", callback_data=f"admin_download_tdata:{product_id}"),
         ],
     ]
-    if can_claim:
-        rows.append([InlineKeyboardButton(text="Забрать со склада", callback_data=f"admin_claim_ask:{product_id}:{verify_back_token}")])
     if can_fetch_code:
         rows.append([InlineKeyboardButton(text="Получить к0d", callback_data=f"admin_get_code:{product_id}:{verify_back_token}", icon_custom_emoji_id=BTN_ICON_CHECK)])
     if can_terminate_sessions:

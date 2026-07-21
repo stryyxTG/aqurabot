@@ -1215,7 +1215,7 @@ async def scan_sold_sessions_for_clean() -> dict:
 
         has_active_reference = any(
             int(reference["product_id"]) != int(product["product_id"])
-            and reference["status"] not in {"sold", "removed"}
+            and reference["status"] not in {"sold", "removed", "dead"}
             for reference in reference_map.get(primary, [])
         )
         if has_active_reference or not all(is_clean_session_path_allowed(path) for path in related_files):
@@ -1305,7 +1305,7 @@ async def remove_product_files_without_logout(
     removing_product_ids = removing_product_ids or {product_id}
     for reference in await list_product_session_references():
         reference_product_id = int(reference["product_id"])
-        if reference_product_id in removing_product_ids or reference["status"] in {"sold", "removed"}:
+        if reference_product_id in removing_product_ids or reference["status"] in {"sold", "removed", "dead"}:
             continue
         try:
             if clean_primary_session_path(reference["session_path"]) == primary:
@@ -1950,6 +1950,14 @@ async def mark_product_dead_after_failed_check(product, error: str, context: str
     if previous_status != "dead" and can_mark_dead:
         changed = await update_product_status(product_id, "dead")
     if changed:
+        cleanup_state, removed_files, removed_size = await remove_product_files_without_logout(product)
+        logger.info(
+            "Dead product local files cleanup | product=%s | state=%s | files=%s | size=%s",
+            product_id,
+            cleanup_state,
+            removed_files,
+            removed_size,
+        )
         await notify_dead_product_to_admins(product, error, context)
     logger.warning(
         "Product failed verification | product=%s | phone=%s | old_status=%s | marked_dead=%s | reason=%s | context=%s",
@@ -6506,9 +6514,7 @@ async def admin_stats(query: CallbackQuery):
         f"<b>Сумма склада:</b> {fmt_money(stats['stock_value'])}\n"
         f"Ожидают к0d: <b>{stats.get('waiting', 0)}</b>\n"
         f"Продано: <b>{stats['sold']}</b>\n"
-        f"Выручка: <b>{fmt_money(stats['revenue'])}</b>\n"
-        f"Товары: <b>{fmt_money(stats.get('accounts_revenue', 0))}</b>\n"
-        f"Услуги: <b>{fmt_money(stats.get('services_revenue', 0))}</b>"
+        f"Выручка от товаров: <b>{fmt_money(stats['revenue'])}</b>"
     )
     await safe_edit(query.message, text, admin_stats_kb())
 
@@ -6604,9 +6610,7 @@ async def admin_reset_revenue_confirm(query: CallbackQuery):
     text = (
         "<b>Выручка сброшена</b>\n\n"
         f"<b>Сумма склада:</b> {fmt_money(stats['stock_value'])}\n"
-        f"Выручка: <b>{fmt_money(stats['revenue'])}</b>\n"
-        f"Товары: <b>{fmt_money(stats.get('accounts_revenue', 0))}</b>\n"
-        f"Услуги: <b>{fmt_money(stats.get('services_revenue', 0))}</b>\n"
+        f"Выручка от товаров: <b>{fmt_money(stats['revenue'])}</b>\n"
         f"Считается с: <code>{html.escape(reset_at[:19])}</code>"
     )
     await safe_edit(query.message, text, admin_stats_kb())

@@ -2453,22 +2453,13 @@ async def get_stats() -> dict:
             revenue_params = (revenue_reset_at,)
         async with db.execute(revenue_query, revenue_params) as cursor:
             revenue = (await cursor.fetchone())["total"]
-        service_revenue_query = "SELECT COALESCE(SUM(amount), 0) AS total FROM service_orders WHERE status = 'delivered'"
-        service_revenue_params: tuple[str, ...] = ()
-        if revenue_reset_at:
-            service_revenue_query += " AND COALESCE(reviewed_at, created_at) >= ?"
-            service_revenue_params = (revenue_reset_at,)
-        async with db.execute(service_revenue_query, service_revenue_params) as cursor:
-            service_revenue = (await cursor.fetchone())["total"]
-        total_revenue = float(revenue or 0) + float(service_revenue or 0)
         return {
             "users": int(users),
             "available": int(available),
             "waiting": int(waiting),
             "sold": int(sold),
-            "revenue": total_revenue,
+            "revenue": float(revenue or 0),
             "accounts_revenue": float(revenue or 0),
-            "services_revenue": float(service_revenue or 0),
             "stock_value": float(stock_value or 0),
             "revenue_reset_at": revenue_reset_at,
         }
