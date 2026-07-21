@@ -1695,6 +1695,16 @@ def sanitize_admin_text(message: Message) -> str:
     return escaped.strip()
 
 
+def broadcast_rich_text(message: Message) -> str:
+    raw_text = message.text or message.caption or ""
+    if not raw_text:
+        return ""
+    entities = message.entities or message.caption_entities or []
+    if entities:
+        return (message.html_text if message.text else message.html_caption).strip()
+    return sanitize_admin_text(message)
+
+
 def plain_button_text(value: object) -> str:
     text = html.unescape(str(value or ""))
     start = TG_EMOJI_START_RE.match(text)
@@ -6448,11 +6458,11 @@ async def admin_broadcast_start(query: CallbackQuery, state: FSMContext):
 async def admin_broadcast_text(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         return
-    text = sanitize_admin_text(message)
+    text = broadcast_rich_text(message)
     if not text:
         await message.answer("Текст рассылки пустой.")
         return
-    await state.update_data(broadcast_text=text)
+    await state.update_data(broadcast_html=text)
     await message.answer(
         "<b>Предпросмотр рассылки</b>\n\n"
         f"{text}",
@@ -6462,12 +6472,12 @@ async def admin_broadcast_text(message: Message, state: FSMContext):
 
 async def send_broadcast_to_user(user_id: int, text: str) -> str:
     try:
-        await bot.send_message(user_id, text)
+        await bot.send_message(user_id, text, parse_mode=ParseMode.HTML)
         return "sent"
     except TelegramRetryAfter as exc:
         await asyncio.sleep(float(getattr(exc, "retry_after", 1)) + 1)
         try:
-            await bot.send_message(user_id, text)
+            await bot.send_message(user_id, text, parse_mode=ParseMode.HTML)
             return "sent"
         except TelegramForbiddenError:
             return "unavailable"
@@ -6496,7 +6506,7 @@ async def admin_broadcast_send(query: CallbackQuery, state: FSMContext):
     if not is_admin(query.from_user.id):
         return
     data = await state.get_data()
-    text = data.get("broadcast_text")
+    text = data.get("broadcast_html") or data.get("broadcast_text")
     if not text:
         await safe_edit(query.message, "Текст рассылки не найден.", admin_home_kb())
         await state.clear()
