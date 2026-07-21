@@ -572,9 +572,9 @@ def admin_country_kb(
             nav.append(InlineKeyboardButton(text=">", callback_data=f"admin_country:{country_id}:{page + 1}"))
         rows.append(nav)
     if sort_callback:
-        rows.append([InlineKeyboardButton(text="Sort", callback_data=sort_callback)])
+        rows.append([InlineKeyboardButton(text="\u0421\u043e\u0440\u0442\u0438\u0440\u043e\u0432\u043a\u0430", callback_data=sort_callback)])
     if clear_sort_callback:
-        rows.append([InlineKeyboardButton(text="Reset sort", callback_data=clear_sort_callback)])
+        rows.append([InlineKeyboardButton(text="\u0421\u0431\u0440\u043e\u0441\u0438\u0442\u044c \u0441\u043e\u0440\u0442\u0438\u0440\u043e\u0432\u043a\u0443", callback_data=clear_sort_callback)])
     rows.extend(
         [
             [InlineKeyboardButton(text="Создать отдел", callback_data=f"admin_department_create:{country_id}")],

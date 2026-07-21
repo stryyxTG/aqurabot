@@ -2312,35 +2312,35 @@ def catalog_filter_menu_text(sort_mode: str | None) -> str:
 
 def format_product_group_sort(sort_mode: str | None) -> str:
     labels = {
-        "created_asc": "oldest first",
-        "created_desc": "newest first",
-        "qty_asc": "fewest items first",
-        "qty_desc": "most items first",
+        "created_asc": "\u0441\u043d\u0430\u0447\u0430\u043b\u0430 \u0441\u0442\u0430\u0440\u044b\u0435",
+        "created_desc": "\u0441\u043d\u0430\u0447\u0430\u043b\u0430 \u043d\u043e\u0432\u044b\u0435",
+        "qty_asc": "\u0441\u043d\u0430\u0447\u0430\u043b\u0430 \u043c\u0435\u043d\u044c\u0448\u0435 \u0442\u043e\u0432\u0430\u0440\u043e\u0432",
+        "qty_desc": "\u0441\u043d\u0430\u0447\u0430\u043b\u0430 \u0431\u043e\u043b\u044c\u0448\u0435 \u0442\u043e\u0432\u0430\u0440\u043e\u0432",
     }
     label = labels.get(str(sort_mode or ""))
-    return f" | <b>Order:</b> {label}" if label else ""
+    return f"\n<b>\u0421\u043e\u0440\u0442\u0438\u0440\u043e\u0432\u043a\u0430:</b> {label}" if label else ""
 
 
 def product_group_sort_menu_text(sort_mode: str | None) -> str:
-    current = format_product_group_sort(sort_mode) or " <b>Order:</b> department creation date (oldest first)"
-    return "<b>Department order</b> Choose how departments are displayed." + current
+    current = format_product_group_sort(sort_mode) or "\n<b>\u0421\u043e\u0440\u0442\u0438\u0440\u043e\u0432\u043a\u0430:</b> \u0441\u0442\u0430\u0440\u044b\u0435 \u043e\u0442\u0434\u0435\u043b\u044b \u0441\u0432\u0435\u0440\u0445\u0443"
+    return "<b>\u0421\u043e\u0440\u0442\u0438\u0440\u043e\u0432\u043a\u0430 \u043e\u0442\u0434\u0435\u043b\u043e\u0432</b>\n\n\u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u043f\u043e\u0440\u044f\u0434\u043e\u043a \u043f\u043e\u043a\u0430\u0437\u0430 \u043e\u0442\u0434\u0435\u043b\u043e\u0432." + current
 
 
 def product_group_sort_menu_kb(*, prefix: str, scope: str, page: int, sort_mode: str | None, back_callback: str) -> InlineKeyboardMarkup:
     mode = str(sort_mode or "")
     rows = [
         [
-            InlineKeyboardButton(text="Date: old first" + (" *" if mode == "created_asc" else ""), callback_data=f"{prefix}_set:{scope}:{page}:created_asc"),
-            InlineKeyboardButton(text="Date: new first" + (" *" if mode == "created_desc" else ""), callback_data=f"{prefix}_set:{scope}:{page}:created_desc"),
+            InlineKeyboardButton(text="\u0421\u0442\u0430\u0440\u044b\u0435 \u0441\u0432\u0435\u0440\u0445\u0443" + (" *" if mode == "created_asc" else ""), callback_data=f"{prefix}_set:{scope}:{page}:created_asc"),
+            InlineKeyboardButton(text="\u041d\u043e\u0432\u044b\u0435 \u0441\u0432\u0435\u0440\u0445\u0443" + (" *" if mode == "created_desc" else ""), callback_data=f"{prefix}_set:{scope}:{page}:created_desc"),
         ],
         [
-            InlineKeyboardButton(text="Qty: low first" + (" *" if mode == "qty_asc" else ""), callback_data=f"{prefix}_set:{scope}:{page}:qty_asc"),
-            InlineKeyboardButton(text="Qty: high first" + (" *" if mode == "qty_desc" else ""), callback_data=f"{prefix}_set:{scope}:{page}:qty_desc"),
+            InlineKeyboardButton(text="\u041c\u0435\u043d\u044c\u0448\u0435 \u0442\u043e\u0432\u0430\u0440\u043e\u0432" + (" *" if mode == "qty_asc" else ""), callback_data=f"{prefix}_set:{scope}:{page}:qty_asc"),
+            InlineKeyboardButton(text="\u0411\u043e\u043b\u044c\u0448\u0435 \u0442\u043e\u0432\u0430\u0440\u043e\u0432" + (" *" if mode == "qty_desc" else ""), callback_data=f"{prefix}_set:{scope}:{page}:qty_desc"),
         ],
     ]
     if mode:
-        rows.append([InlineKeyboardButton(text="Reset sort", callback_data=f"{prefix}_clear:{scope}:{page}", icon_custom_emoji_id=BTN_ICON_CANCEL)])
-    rows.append([InlineKeyboardButton(text="Back", callback_data=back_callback, icon_custom_emoji_id=BTN_ICON_BACK)])
+        rows.append([InlineKeyboardButton(text="\u0421\u0431\u0440\u043e\u0441\u0438\u0442\u044c \u0441\u043e\u0440\u0442\u0438\u0440\u043e\u0432\u043a\u0443", callback_data=f"{prefix}_clear:{scope}:{page}", icon_custom_emoji_id=BTN_ICON_CANCEL)])
+    rows.append([InlineKeyboardButton(text="\u041d\u0430\u0437\u0430\u0434", callback_data=back_callback, icon_custom_emoji_id=BTN_ICON_BACK)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -5022,7 +5022,7 @@ async def catalog_group_sort_menu(query: CallbackQuery, state: FSMContext):
         _, scope, page_raw = (query.data or "").split(":", 2)
         page = max(0, int(page_raw))
     except ValueError:
-        await query.answer("Sort not found.", show_alert=True)
+        await query.answer("\u0421\u043e\u0440\u0442\u0438\u0440\u043e\u0432\u043a\u0430 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u0430.", show_alert=True)
         return
     country_id = None if scope == "all" else int(scope)
     await safe_edit(
@@ -5047,10 +5047,10 @@ async def catalog_group_sort_set(query: CallbackQuery, state: FSMContext):
         _, scope, page_raw, sort_mode = (query.data or "").split(":", 3)
         page = max(0, int(page_raw))
     except ValueError:
-        await query.answer("Sort not found.", show_alert=True)
+        await query.answer("\u0421\u043e\u0440\u0442\u0438\u0440\u043e\u0432\u043a\u0430 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u0430.", show_alert=True)
         return
     if sort_mode not in {"created_asc", "created_desc", "qty_asc", "qty_desc"}:
-        await query.answer("Sort not found.", show_alert=True)
+        await query.answer("\u0421\u043e\u0440\u0442\u0438\u0440\u043e\u0432\u043a\u0430 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u0430.", show_alert=True)
         return
     catalog_group_sort_modes[query.from_user.id] = sort_mode
     await _render_product_list(query, country_id=None if scope == "all" else int(scope), page=page)
@@ -5059,13 +5059,13 @@ async def catalog_group_sort_set(query: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data.startswith("catalog_group_sort_clear:"))
 async def catalog_group_sort_clear(query: CallbackQuery, state: FSMContext):
     await ensure_known_user(query)
-    await query.answer("Sort reset.")
+    await query.answer("\u0421\u043e\u0440\u0442\u0438\u0440\u043e\u0432\u043a\u0430 \u0441\u0431\u0440\u043e\u0448\u0435\u043d\u0430.")
     await state.clear()
     try:
         _, scope, page_raw = (query.data or "").split(":", 2)
         page = max(0, int(page_raw))
     except ValueError:
-        await query.answer("Sort not found.", show_alert=True)
+        await query.answer("\u0421\u043e\u0440\u0442\u0438\u0440\u043e\u0432\u043a\u0430 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u0430.", show_alert=True)
         return
     catalog_group_sort_modes.pop(query.from_user.id, None)
     await _render_product_list(query, country_id=None if scope == "all" else int(scope), page=page)
@@ -6956,7 +6956,7 @@ async def admin_group_sort_menu(query: CallbackQuery, state: FSMContext):
         country_id = int(country_id_raw)
         page = max(0, int(page_raw))
     except ValueError:
-        await query.answer("Sort not found.", show_alert=True)
+        await query.answer("\u0421\u043e\u0440\u0442\u0438\u0440\u043e\u0432\u043a\u0430 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u0430.", show_alert=True)
         return
     await safe_edit(
         query.message,
@@ -6983,10 +6983,10 @@ async def admin_group_sort_set(query: CallbackQuery, state: FSMContext):
         country_id = int(country_id_raw)
         page = max(0, int(page_raw))
     except ValueError:
-        await query.answer("Sort not found.", show_alert=True)
+        await query.answer("\u0421\u043e\u0440\u0442\u0438\u0440\u043e\u0432\u043a\u0430 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u0430.", show_alert=True)
         return
     if sort_mode not in {"created_asc", "created_desc", "qty_asc", "qty_desc"}:
-        await query.answer("Sort not found.", show_alert=True)
+        await query.answer("\u0421\u043e\u0440\u0442\u0438\u0440\u043e\u0432\u043a\u0430 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u0430.", show_alert=True)
         return
     admin_group_sort_modes[query.from_user.id] = sort_mode
     await render_admin_country(query.message, country_id, user_id=query.from_user.id, page=page)
@@ -6995,7 +6995,7 @@ async def admin_group_sort_set(query: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data.startswith("admin_group_sort_clear:"))
 async def admin_group_sort_clear(query: CallbackQuery, state: FSMContext):
     await ensure_known_user(query)
-    await query.answer("Sort reset.")
+    await query.answer("\u0421\u043e\u0440\u0442\u0438\u0440\u043e\u0432\u043a\u0430 \u0441\u0431\u0440\u043e\u0448\u0435\u043d\u0430.")
     if not is_admin(query.from_user.id):
         return
     await state.clear()
@@ -7004,7 +7004,7 @@ async def admin_group_sort_clear(query: CallbackQuery, state: FSMContext):
         country_id = int(country_id_raw)
         page = max(0, int(page_raw))
     except ValueError:
-        await query.answer("Sort not found.", show_alert=True)
+        await query.answer("\u0421\u043e\u0440\u0442\u0438\u0440\u043e\u0432\u043a\u0430 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u0430.", show_alert=True)
         return
     admin_group_sort_modes.pop(query.from_user.id, None)
     await render_admin_country(query.message, country_id, user_id=query.from_user.id, page=page)
@@ -7063,7 +7063,7 @@ async def admin_country_view(query: CallbackQuery):
         country_id = int(parts[1])
         page = max(0, int(parts[2])) if len(parts) > 2 else 0
     except (IndexError, ValueError):
-        await query.answer("Country not found.", show_alert=True)
+        await query.answer("\u0421\u0442\u0440\u0430\u043d\u0430 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u0430.", show_alert=True)
         return
     await render_admin_country(query.message, country_id, user_id=query.from_user.id, page=page)
 
