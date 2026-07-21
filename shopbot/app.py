@@ -2005,6 +2005,8 @@ async def get_owned_sold_product(user_id: int, product_id: int):
 
 def dead_product_reason(error: str) -> str:
     text = str(error or "").casefold()
+    if "frozen" in text or "\u0437\u0430\u043c\u043e\u0440\u043e\u0436" in text:
+        return "\u0422\u0435\u043b\u0435\u0433\u0440\u0430\u043c \u043f\u043e\u043c\u0435\u0442\u0438\u043b \u0430\u043a\u043a\u0430\u0443\u043d\u0442 \u043a\u0430\u043a \u0437\u0430\u043c\u043e\u0440\u043e\u0436\u0435\u043d\u043d\u044b\u0439."
     if "сессия не найдена" in text or ("session" in text and "not found" in text):
         return "Файл session отсутствует или недоступен на сервере."
     if "сессия недействительна" in text or "не авториз" in text or "unauthor" in text or "authkey" in text or "auth key" in text:
@@ -2019,6 +2021,8 @@ def dead_product_reason(error: str) -> str:
 
 
 def failed_check_requires_removal(error: str, result: dict | None = None) -> bool:
+    if result is not None and result.get("freeze_status") == "frozen":
+        return True
     if result is not None and "fatal" in result:
         return bool(result.get("fatal"))
     text = str(error or "").casefold()

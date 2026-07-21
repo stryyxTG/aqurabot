@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from telethon import functions, types
 from telethon.errors import (
     FloodWaitError,
     PasswordHashInvalidError,
@@ -59,6 +60,36 @@ class ActiveLogin:
 
 class LoginExpiredError(RuntimeError):
     pass
+
+
+_FROZEN_RPC_MARKERS = (
+    "FROZEN_METHOD_INVALID",
+    "FROZEN_PARTICIPANT_MISSING",
+)
+
+
+def _decode_telegram_json(value):
+    """Convert Telethon's JSON TL objects into regular Python values."""
+    if isinstance(value, types.JsonObject):
+        return {item.key: _decode_telegram_json(item.value) for item in value.value}
+    if isinstance(value, types.JsonArray):
+        return [_decode_telegram_json(item) for item in value.value]
+    if isinstance(value, (types.JsonString, types.JsonNumber, types.JsonBool)):
+        return value.value
+    if isinstance(value, types.JsonNull):
+        return None
+    return value
+
+
+def _is_frozen_rpc_error(exc: Exception) -> bool:
+    details = " ".join(
+        part for part in (str(getattr(exc, "message", "") or ""), str(exc), type(exc).__name__) if part
+    ).upper()
+    compact_details = re.sub(r"[^A-Z]", "", details)
+    compact_markers = tuple(marker.replace("_", "") for marker in _FROZEN_RPC_MARKERS)
+    return any(marker in details for marker in _FROZEN_RPC_MARKERS) or any(
+        marker in compact_details for marker in compact_markers
+    )
 
 
 class ShopSessionManager:
@@ -601,6 +632,7 @@ class ShopSessionManager:
         details = str(exc).strip() or class_name
         normalized_name = class_name.casefold()
         normalized_details = details.casefold()
+        frozen = _is_frozen_rpc_error(exc)
         fatal_markers = (
             "authkeyunregistered",
             "authkeyduplicated",
@@ -615,18 +647,55 @@ class ShopSessionManager:
             "user deactivated",
             "account has been deleted",
         )
-        fatal = any(marker in normalized_name for marker in fatal_markers) or any(
+        fatal = frozen or any(marker in normalized_name for marker in fatal_markers) or any(
             marker in normalized_details for marker in fatal_text_markers
         )
-        if fatal:
-            error = f"Сессия недействительна ({class_name}): {details}"
+        if frozen:
+            error = f"\u0410\u043a\u043a\u0430\u0443\u043d\u0442 \u0437\u0430\u043c\u043e\u0440\u043e\u0436\u0435\u043d Telegram ({class_name}): {details}"
+        elif fatal:
+            error = f"\u0421\u0435\u0441\u0441\u0438\u044f \u043d\u0435\u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0442\u0435\u043b\u044c\u043d\u0430 ({class_name}): {details}"
         elif isinstance(exc, FloodWaitError):
-            error = f"Временное ограничение Telegram: подождите {exc.seconds} сек."
+            error = f"\u0412\u0440\u0435\u043c\u0435\u043d\u043d\u043e\u0435 \u043e\u0433\u0440\u0430\u043d\u0438\u0447\u0435\u043d\u0438\u0435 Telegram: \u043f\u043e\u0434\u043e\u0436\u0434\u0438\u0442\u0435 {exc.seconds} \u0441\u0435\u043a."
         elif isinstance(exc, (asyncio.TimeoutError, TimeoutError, OSError, ConnectionError)):
-            error = f"Временная ошибка подключения ({class_name}): {details}"
+            error = f"\u0412\u0440\u0435\u043c\u0435\u043d\u043d\u0430\u044f \u043e\u0448\u0438\u0431\u043a\u0430 \u043f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d\u0438\u044f ({class_name}): {details}"
         else:
-            error = f"Ошибка Telegram ({class_name}): {details}"
-        return {"alive": False, "fatal": fatal, "error": error}
+            error = f"\u041e\u0448\u0438\u0431\u043a\u0430 Telegram ({class_name}): {details}"
+        result = {"alive": False, "fatal": fatal, "error": error}
+        if frozen:
+            result["freeze_status"] = "frozen"
+        return result
+
+    async def _check_account_freeze_status(self, client) -> dict:
+        """Detect Telegram's account-freeze flag without treating transient failures as fatal."""
+        try:
+            result = await self._run_once(client(functions.help.GetAppConfigRequest(hash=0)))
+            if isinstance(result, types.help.AppConfigNotModified):
+                return {"freeze_status": "unknown"}
+
+            config = _decode_telegram_json(getattr(result, "config", None))
+            config = config if isinstance(config, dict) else {}
+            frozen_since = config.get("freeze_since_date") or 0
+            if frozen_since:
+                return {
+                    "freeze_status": "frozen",
+                    "freeze_since": frozen_since,
+                    "freeze_until": config.get("freeze_until_date"),
+                    "freeze_appeal_url": config.get("freeze_appeal_url"),
+                    "error": "\u0410\u043a\u043a\u0430\u0443\u043d\u0442 \u0437\u0430\u043c\u043e\u0440\u043e\u0436\u0435\u043d Telegram",
+                }
+            return {"freeze_status": "active"}
+        except Exception as exc:
+            if _is_frozen_rpc_error(exc):
+                return {
+                    "freeze_status": "frozen",
+                    "error": f"\u0410\u043a\u043a\u0430\u0443\u043d\u0442 \u0437\u0430\u043c\u043e\u0440\u043e\u0436\u0435\u043d Telegram ({type(exc).__name__}): {str(exc).strip() or type(exc).__name__}",
+                }
+            logger.info(
+                "Freeze status check skipped | error_type=%s | error=%s",
+                type(exc).__name__,
+                _mask_digits_in_text(str(exc), limit=120),
+            )
+            return {"freeze_status": "unknown"}
 
     async def verify_account_alive(self, product_id: int) -> dict:
         """Connect to a stored session and classify permanent and temporary failures."""
@@ -644,6 +713,9 @@ class ShopSessionManager:
             me = await self._run_once(client.get_me())
             if me is None:
                 return {"alive": False, "fatal": False, "error": "Telegram не вернул данные профиля"}
+            freeze = await self._check_account_freeze_status(client)
+            if freeze.get("freeze_status") == "frozen":
+                return {"alive": False, "fatal": True, **freeze}
             return {
                 "alive": True,
                 "fatal": False,
@@ -651,6 +723,7 @@ class ShopSessionManager:
                 "phone": me.phone or "",
                 "username": me.username or "",
                 "first_name": me.first_name or "User",
+                "freeze_status": freeze.get("freeze_status", "unknown"),
             }
         except Exception as exc:
             logger.warning(
@@ -683,6 +756,9 @@ class ShopSessionManager:
             me = await self._run_once(client.get_me())
             if me is None:
                 return {"alive": False, "fatal": False, "error": "Telegram не вернул данные профиля"}
+            freeze = await self._check_account_freeze_status(client)
+            if freeze.get("freeze_status") == "frozen":
+                return {"alive": False, "fatal": True, **freeze}
             return {
                 "alive": True,
                 "fatal": False,
@@ -690,6 +766,7 @@ class ShopSessionManager:
                 "phone": me.phone or "",
                 "username": me.username or "",
                 "first_name": me.first_name or "User",
+                "freeze_status": freeze.get("freeze_status", "unknown"),
             }
         except Exception as exc:
             logger.warning(
