@@ -494,6 +494,8 @@ FSM_CALLBACK_WHITELIST = {
 def is_fsm_callback_allowed(current_state: str, callback_data: str) -> bool:
     if callback_data == "agreement_accept" or callback_data.startswith("check_pay:"):
         return True
+    if callback_data.startswith(("topup_approve:", "topup_reject:", "topup_cancel:", "topup_confirm:")):
+        return True
     if callback_data.startswith("cancel_flow:"):
         return True
     for allowed in FSM_CALLBACK_WHITELIST.get(current_state, ()):
