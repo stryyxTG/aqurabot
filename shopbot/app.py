@@ -25,7 +25,7 @@ from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramFor
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import CallbackQuery, ChatJoinRequest, ChatMemberUpdated, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message, TelegramObject
+from aiogram.types import CallbackQuery, ChatJoinRequest, ChatMemberUpdated, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message, ReplyParameters, TelegramObject
 
 from .db import (
     accept_user_agreement,
@@ -503,6 +503,27 @@ def is_fsm_callback_allowed(current_state: str, callback_data: str) -> bool:
     return False
 
 
+async def remind_topup_receipt_cancellation(target: Message | CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    prompt_message_id = data.get("topup_receipt_prompt_message_id")
+    text = (
+        "<b>\u041f\u043e\u043f\u043e\u043b\u043d\u0435\u043d\u0438\u0435 \u0435\u0449\u0435 \u043d\u0435 \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043d\u043e.</b>\n\n"
+        "\u0421\u043d\u0430\u0447\u0430\u043b\u0430 \u043d\u0430\u0436\u043c\u0438\u0442\u0435 \u00ab\u041e\u0442\u043c\u0435\u043d\u0438\u0442\u044c\u00bb \u043f\u043e\u0434 \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u0435\u043c \u0441 \u0440\u0435\u043a\u0432\u0438\u0437\u0438\u0442\u0430\u043c\u0438 \u0438 \u0437\u0430\u043f\u0440\u043e\u0441\u043e\u043c \u0447\u0435\u043a\u0430."
+    )
+    chat_id = target.chat.id if isinstance(target, Message) else target.message.chat.id
+    try:
+        prompt_id = int(prompt_message_id or 0)
+    except (TypeError, ValueError):
+        prompt_id = 0
+    if prompt_id:
+        await bot.send_message(chat_id, text, reply_parameters=ReplyParameters(message_id=prompt_id))
+        return
+    if isinstance(target, Message):
+        await target.answer(text)
+    else:
+        await target.message.answer(text)
+
+
 class CallbackFSMGuardMiddleware(BaseMiddleware):
     async def __call__(self, handler, event: TelegramObject, data: dict):
         if not isinstance(event, CallbackQuery):
@@ -520,6 +541,10 @@ class CallbackFSMGuardMiddleware(BaseMiddleware):
         if is_fsm_callback_allowed(current_state, callback_data):
             return await handler(event, data)
 
+        if current_state == UserTopUpStates.waiting_receipt.state:
+            await event.answer()
+            await remind_topup_receipt_cancellation(event, state)
+            return
         await event.answer("Сначала завершите текущий шаг или нажмите «Отменить».", show_alert=True)
 
 
@@ -2734,7 +2759,10 @@ async def start_logic(target: Message | CallbackQuery) -> None:
 
 
 @dp.message(Command("start"))
-async def cmd_start(message: Message):
+async def cmd_start(message: Message, state: FSMContext):
+    if await state.get_state() == UserTopUpStates.waiting_receipt.state:
+        await remind_topup_receipt_cancellation(message, state)
+        return
     await start_logic(message)
 
 
@@ -3818,7 +3846,8 @@ async def user_topup_amount(message: Message, state: FSMContext):
             topup_rate_source=quote["rate_source"],
         )
         await state.set_state(UserTopUpStates.waiting_receipt)
-        await message.answer(await manual_topup_requisites(method, quote), reply_markup=topup_receipt_kb())
+        receipt_prompt = await message.answer(await manual_topup_requisites(method, quote), reply_markup=topup_receipt_kb())
+        await state.update_data(topup_receipt_prompt_message_id=receipt_prompt.message_id)
         return
 
     # Создаем инвойс через Crypto Pay
@@ -3866,6 +3895,9 @@ async def user_topup_amount(message: Message, state: FSMContext):
 @dp.message(UserTopUpStates.waiting_receipt)
 async def user_topup_receipt(message: Message, state: FSMContext):
     await ensure_known_user(message)
+    if (message.text or "").strip().startswith("/"):
+        await remind_topup_receipt_cancellation(message, state)
+        return
     data = await state.get_data()
     method = data.get("topup_method")
     payment_amount = float(data.get("topup_payment_amount") or 0)
