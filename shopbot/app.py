@@ -1084,6 +1084,117 @@ async def log_purchase(event_type: str, **data) -> None:
             logger.exception("Could not send log channel event | event=%s", event_type)
 
 
+
+async def log_product_upload(
+    *,
+    admin_id: int,
+    method: str,
+    country: str = "",
+    title: str = "",
+    price: float | None = None,
+    received: int = 0,
+    created_product_ids: list[int] | None = None,
+    errors: list[str] | None = None,
+    duplicates_found: int = 0,
+    duplicates_uploaded: int = 0,
+    duplicates_skipped: int = 0,
+    exact_duplicates_skipped: int = 0,
+    json_count: int = 0,
+    note: str = "",
+) -> None:
+    """Send a complete, operator-friendly product upload report to the log channel."""
+    created_product_ids = created_product_ids or []
+    errors = errors or []
+    admin = await get_user(admin_id)
+    admin_username = str(admin["username"] or "") if admin else ""
+    admin_label = f"@{admin_username}" if admin_username else str((admin["first_name"] if admin else "") or "\u0431\u0435\u0437 username")
+    admin_profile = user_profile_html(user_id=admin_id, username=admin_username or None, label=admin_label)
+
+    products = []
+    for product_id in created_product_ids:
+        product = await get_product(int(product_id))
+        if product:
+            products.append(product)
+
+    if products and not errors:
+        status = "\u2705 <b>\u0417\u0410\u0413\u0420\u0423\u0417\u041a\u0410 \u0422\u041e\u0412\u0410\u0420\u041e\u0412 \u0417\u0410\u0412\u0415\u0420\u0428\u0415\u041d\u0410</b>"
+    elif products:
+        status = "\u26a0\ufe0f <b>\u0417\u0410\u0413\u0420\u0423\u0417\u041a\u0410 \u0417\u0410\u0412\u0415\u0420\u0428\u0415\u041d\u0410 \u0421 \u0417\u0410\u041c\u0415\u0427\u0410\u041d\u0418\u042f\u041c\u0418</b>"
+    elif errors:
+        status = "\u274c <b>\u0417\u0410\u0413\u0420\u0423\u0417\u041a\u0410 \u041d\u0415 \u0423\u0414\u0410\u041b\u0410\u0421\u042c</b>"
+    else:
+        status = "\u2139\ufe0f <b>\u0417\u0410\u0413\u0420\u0423\u0417\u041a\u0410 \u0417\u0410\u0412\u0415\u0420\u0428\u0415\u041d\u0410 \u0411\u0415\u0417 \u0414\u041e\u0411\u0410\u0412\u041b\u0415\u041d\u0418\u0419</b>"
+    lines = [
+        status,
+        "",
+        f"<b>\u0410\u0434\u043c\u0438\u043d:</b> {admin_profile}",
+        f"<b>User ID:</b> <code>{admin_id}</code>",
+        f"<b>\u0421\u043f\u043e\u0441\u043e\u0431:</b> {html.escape(method)}",
+        f"<b>\u041f\u043e\u043b\u0443\u0447\u0435\u043d\u043e \u0441\u0435\u0441\u0441\u0438\u0439:</b> {received}",
+        f"<b>\u0423\u0441\u043f\u0435\u0448\u043d\u043e \u0434\u043e\u0431\u0430\u0432\u043b\u0435\u043d\u043e:</b> {len(products)}",
+    ]
+    if country:
+        lines.append(f"<b>\u0421\u0442\u0440\u0430\u043d\u0430:</b> {html.escape(country)}")
+    if title:
+        lines.append(f"<b>\u041e\u0442\u0434\u0435\u043b:</b> {render_rich_text(title)}")
+    if price is not None:
+        lines.append(f"<b>\u0426\u0435\u043d\u0430:</b> {fmt_money(float(price))}")
+    if json_count:
+        lines.append(f"<b>JSON \u043f\u0440\u0438\u043d\u044f\u0442\u043e:</b> {json_count}")
+    if duplicates_found:
+        lines.append(f"<b>\u041f\u043e\u0432\u0442\u043e\u0440\u043e\u0432 \u043e\u0431\u043d\u0430\u0440\u0443\u0436\u0435\u043d\u043e:</b> {duplicates_found}")
+    if duplicates_uploaded:
+        lines.append(f"<b>\u041f\u043e\u0432\u0442\u043e\u0440\u043e\u0432 \u0434\u043e\u0431\u0430\u0432\u043b\u0435\u043d\u043e:</b> {duplicates_uploaded}")
+    if duplicates_skipped:
+        lines.append(f"<b>\u041f\u043e\u0432\u0442\u043e\u0440\u043e\u0432 \u043f\u0440\u043e\u043f\u0443\u0449\u0435\u043d\u043e:</b> {duplicates_skipped}")
+    if exact_duplicates_skipped:
+        lines.append(f"<b>\u0422\u043e\u0447\u043d\u044b\u0445 \u043a\u043e\u043f\u0438\u0439 session \u043f\u0440\u043e\u043f\u0443\u0449\u0435\u043d\u043e:</b> {exact_duplicates_skipped}")
+    if errors:
+        lines.append(f"<b>\u041e\u0448\u0438\u0431\u043e\u043a / \u043e\u0442\u043a\u043b\u043e\u043d\u0435\u043d\u043e:</b> {len(errors)}")
+    if note:
+        lines.append(f"<b>\u041f\u0440\u0438\u043c\u0435\u0447\u0430\u043d\u0438\u0435:</b> {html.escape(note)}")
+    lines.append(f"<b>\u0412\u0440\u0435\u043c\u044f:</b> {datetime.now(DISPLAY_TZ).strftime('%d.%m.%Y %H:%M:%S GMT+3')}")
+
+    if products:
+        lines.extend(["", "<b>\u0414\u043e\u0431\u0430\u0432\u043b\u0435\u043d\u043d\u044b\u0435 \u0442\u043e\u0432\u0430\u0440\u044b:</b>"])
+        for product in products:
+            phone = str(product["phone"] or "\u2014")
+            username = str(product["username"] or "").strip()
+            username_text = f" @{html.escape(username.lstrip('@'))}" if username else ""
+            lines.append(
+                f"\u2022 <code>#{product['product_id']}</code> \u00b7 <code>{html.escape(phone)}</code>{username_text}"
+            )
+    if errors:
+        lines.extend(["", "<b>\u041f\u0440\u0438\u0447\u0438\u043d\u044b:</b>"])
+        for error in errors:
+            lines.append(f"\u2022 {html.escape(str(error))}")
+
+    try:
+        # Keep every account and failure visible while respecting Telegram's message limit.
+        chunk: list[str] = []
+        chunk_size = 0
+        for line in lines:
+            line_size = len(line) + 1
+            if chunk and chunk_size + line_size > 3500:
+                await bot.send_message(LOG_CHANNEL_ID, "\n".join(chunk))
+                chunk = []
+                chunk_size = 0
+            chunk.append(line)
+            chunk_size += line_size
+        if chunk:
+            await bot.send_message(LOG_CHANNEL_ID, "\n".join(chunk))
+        logger.info(
+            "Product upload log sent | admin=%s | method=%s | received=%s | created=%s | errors=%s",
+            admin_id,
+            method,
+            received,
+            len(products),
+            len(errors),
+        )
+    except Exception:
+        logger.exception("Could not send product upload log | admin=%s", admin_id)
+
+
 async def create_full_database_excel() -> str:
     """Создает Excel файл с полной экспортом БД: юзеры, их покупки и товары"""
     try:
@@ -9556,6 +9667,7 @@ async def admin_add_by_session(query: CallbackQuery, state: FSMContext):
         bulk_session_names={},
         bulk_metadata_by_session={},
         bulk_pending_metadata={},
+        bulk_upload_stats={"zip_files": 0, "session_files": 0, "json_files": 0, "exact_duplicates": 0, "tdata_skipped": 0},
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Готово", callback_data="bulk_sessions_done")],
@@ -9594,11 +9706,13 @@ async def admin_add_bulk_sessions(message: Message, state: FSMContext):
         bulk_session_names = data.get("bulk_session_names", {}) or {}
         metadata_by_session = data.get("bulk_metadata_by_session", {}) or {}
         pending_metadata = data.get("bulk_pending_metadata", {}) or {}
+        upload_stats = dict(data.get("bulk_upload_stats", {}) or {})
 
         if lower_name.endswith(".json"):
             metadata = parse_session_metadata_bytes(content, file_name)
             metadata_lookup_put(pending_metadata, file_name, metadata)
-            await state.update_data(bulk_pending_metadata=pending_metadata)
+            upload_stats["json_files"] = int(upload_stats.get("json_files", 0) or 0) + 1
+            await state.update_data(bulk_pending_metadata=pending_metadata, bulk_upload_stats=upload_stats)
             matched = await apply_bulk_metadata_to_existing_sessions(state, metadata, file_name)
             await message.answer(
                 "JSON принят.\n"
@@ -9678,6 +9792,13 @@ async def admin_add_bulk_sessions(message: Message, state: FSMContext):
                 bulk_session_names=bulk_session_names,
                 bulk_metadata_by_session=metadata_by_session,
                 bulk_pending_metadata=json_lookup,
+                bulk_upload_stats={
+                    **upload_stats,
+                    "zip_files": int(upload_stats.get("zip_files", 0) or 0) + 1,
+                    "json_files": int(upload_stats.get("json_files", 0) or 0) + json_count,
+                    "exact_duplicates": int(upload_stats.get("exact_duplicates", 0) or 0) + skipped_exact_duplicates,
+                    "tdata_skipped": int(upload_stats.get("tdata_skipped", 0) or 0) + skipped_tdata,
+                },
             )
             text = (
                 "<b>ZIP обработан</b>\n\n"
@@ -9706,6 +9827,8 @@ async def admin_add_bulk_sessions(message: Message, state: FSMContext):
         session_bytes = content
         file_hash = session_file_sha256(session_bytes)
         if file_hash in set(bulk_hashes):
+            upload_stats["exact_duplicates"] = int(upload_stats.get("exact_duplicates", 0) or 0) + 1
+            await state.update_data(bulk_upload_stats=upload_stats)
             await message.answer(
                 "Эта session уже есть в текущей пачке и пропущена.\n\n"
                 f"Всего сессий: <b>{len(bulk_sessions)}</b>",
@@ -9733,6 +9856,10 @@ async def admin_add_bulk_sessions(message: Message, state: FSMContext):
             bulk_session_hashes=bulk_hashes,
             bulk_session_names=bulk_session_names,
             bulk_metadata_by_session=metadata_by_session,
+            bulk_upload_stats={
+                **upload_stats,
+                "session_files": int(upload_stats.get("session_files", 0) or 0) + 1,
+            },
         )
         
         await message.answer(
@@ -10373,10 +10500,11 @@ async def prepare_bulk_sessions_for_creation(data: dict, admin_id: int) -> tuple
     return prepared_items, errors
 
 
-async def create_prepared_bulk_products(data: dict, admin_id: int, prepared_items: list[dict], decisions: dict) -> tuple[list[int], list[str], int]:
+async def create_prepared_bulk_products(data: dict, admin_id: int, prepared_items: list[dict], decisions: dict) -> tuple[list[int], list[str], int, int]:
     created_products: list[int] = []
     errors: list[str] = []
     skipped = 0
+    created_duplicates = 0
     extra_code = data.get("extra_code", "")
 
     for item in prepared_items:
@@ -10410,6 +10538,8 @@ async def create_prepared_bulk_products(data: dict, admin_id: int, prepared_item
                 created_by=admin_id,
             )
             created_products.append(product_id)
+            if duplicate_id or duplicate_source_idx:
+                created_duplicates += 1
             logger.info(
                 "Product created from bulk session | product=%s | admin=%s | item=%s | phone=%s | country=%s | title=%s | duplicate=%s",
                 product_id,
@@ -10428,7 +10558,7 @@ async def create_prepared_bulk_products(data: dict, admin_id: int, prepared_item
                 item.get("idx"),
                 Path(str(item.get("session_path") or "")).name,
             )
-    return created_products, errors, skipped
+    return created_products, errors, skipped, created_duplicates
 
 
 async def show_bulk_duplicate_prompt(message: Message, state: FSMContext, *, edit: bool = False) -> bool:
@@ -10469,8 +10599,36 @@ async def finish_bulk_product_creation(message: Message, state: FSMContext, admi
         await show_bulk_duplicate_prompt(message, state)
         return
 
-    created_products, create_errors, skipped = await create_prepared_bulk_products(data, admin_id, prepared_items, decisions)
+    created_products, create_errors, skipped, created_duplicates = await create_prepared_bulk_products(data, admin_id, prepared_items, decisions)
     errors = list(prepare_errors) + create_errors
+    upload_stats = dict(data.get("bulk_upload_stats", {}) or {})
+    duplicate_items = [item for item in prepared_items if is_duplicate_prepared_item(item)]
+    duplicate_uploads = created_duplicates
+    source_parts: list[str] = []
+    if int(upload_stats.get("zip_files", 0) or 0):
+        source_parts.append(f"ZIP: {int(upload_stats.get('zip_files', 0) or 0)}")
+    if int(upload_stats.get("session_files", 0) or 0):
+        source_parts.append(f".session: {int(upload_stats.get('session_files', 0) or 0)}")
+    method = " + ".join(source_parts) or ".session"
+    notes: list[str] = []
+    if int(upload_stats.get("tdata_skipped", 0) or 0):
+        notes.append(f"tdata \u0432 \u0430\u0440\u0445\u0438\u0432\u0430\u0445 \u043f\u0440\u043e\u043f\u0443\u0449\u0435\u043d\u043e: {int(upload_stats.get('tdata_skipped', 0) or 0)}")
+    await log_product_upload(
+        admin_id=admin_id,
+        method=method,
+        country=str(data.get("country") or ""),
+        title=str(data.get("title") or ""),
+        price=float(data["price"]) if data.get("price") is not None else None,
+        received=len(data.get("bulk_sessions", []) or []),
+        created_product_ids=created_products,
+        errors=errors,
+        duplicates_found=len(duplicate_items),
+        duplicates_uploaded=duplicate_uploads,
+        duplicates_skipped=skipped,
+        exact_duplicates_skipped=int(upload_stats.get("exact_duplicates", 0) or 0),
+        json_count=int(upload_stats.get("json_files", 0) or 0),
+        note="; ".join(notes),
+    )
     await state.clear()
     await session_manager.cleanup(admin_id)
 
@@ -10493,6 +10651,36 @@ async def finish_bulk_product_creation(message: Message, state: FSMContext, admi
         skipped,
         len(errors),
     )
+
+
+async def log_single_product_upload_result(
+    data: dict,
+    admin_id: int,
+    *,
+    product_id: int | None = None,
+    errors: list[str] | None = None,
+    note: str = "",
+) -> None:
+    uploaded_session = bool(data.get("session_path"))
+    method = "\u0417\u0430\u0433\u0440\u0443\u0437\u043a\u0430 .session \u0444\u0430\u0439\u043b\u0430" if uploaded_session else "\u0412\u0445\u043e\u0434 \u043f\u043e \u043d\u043e\u043c\u0435\u0440\u0443 + \u043a\u043e\u0434"
+    duplicate_found = 1 if data.get("single_duplicate_product_id") else 0
+    duplicate_uploaded = 1 if duplicate_found and data.get("single_duplicate_decision") == "upload" and product_id else 0
+    duplicate_skipped = 1 if duplicate_found and data.get("single_duplicate_decision") == "skip" else 0
+    await log_product_upload(
+        admin_id=admin_id,
+        method=method,
+        country=str(data.get("country") or ""),
+        title=str(data.get("title") or ""),
+        price=float(data["price"]) if data.get("price") is not None else None,
+        received=1,
+        created_product_ids=[product_id] if product_id else [],
+        errors=errors or [],
+        duplicates_found=duplicate_found,
+        duplicates_uploaded=duplicate_uploaded,
+        duplicates_skipped=duplicate_skipped,
+        note=note,
+    )
+
 
 async def finish_admin_add_products(message: Message, state: FSMContext, admin_id: int) -> None:
     data = await state.get_data()
@@ -10522,6 +10710,12 @@ async def finish_admin_add_products(message: Message, state: FSMContext, admin_i
             if not uploaded_alive_check.get("alive"):
                 error = uploaded_alive_check.get("error", "Неизвестная ошибка")
                 discard_session_files(uploaded_session_path)
+                await log_single_product_upload_result(
+                    data,
+                    admin_id,
+                    errors=[str(error)],
+                    note="\u0421\u0435\u0441\u0441\u0438\u044f \u043d\u0435 \u043f\u0440\u043e\u0448\u043b\u0430 \u043f\u0435\u0440\u0432\u0438\u0447\u043d\u0443\u044e \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0443.",
+                )
                 await state.clear()
                 await session_manager.cleanup(admin_id)
                 await message.answer(
@@ -10545,6 +10739,11 @@ async def finish_admin_add_products(message: Message, state: FSMContext, admin_i
         if duplicate_decision == "skip":
             if uploaded_session_path:
                 discard_session_files(uploaded_session_path)
+            await log_single_product_upload_result(
+                data,
+                admin_id,
+                note="\u041f\u043e\u0432\u0442\u043e\u0440 \u043f\u0440\u043e\u043f\u0443\u0449\u0435\u043d \u043f\u043e \u0440\u0435\u0448\u0435\u043d\u0438\u044e \u0430\u0434\u043c\u0438\u043d\u0430.",
+            )
             await state.clear()
             await session_manager.cleanup(admin_id)
             await message.answer("Повтор пропущен. Товар не добавлен.", reply_markup=admin_home_kb())
@@ -10595,6 +10794,12 @@ async def finish_admin_add_products(message: Message, state: FSMContext, admin_i
             if not alive_check.get("alive"):
                 error = alive_check.get("error", "Неизвестная ошибка")
                 await force_remove_product(product_id)
+                await log_single_product_upload_result(
+                    data,
+                    admin_id,
+                    errors=[str(error)],
+                    note="\u0422\u043e\u0432\u0430\u0440 \u0441\u043e\u0437\u0434\u0430\u043d, \u043d\u043e \u0443\u0434\u0430\u043b\u0451\u043d \u043f\u043e\u0441\u043b\u0435 \u043d\u0435\u0443\u0441\u043f\u0435\u0448\u043d\u043e\u0439 \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0438.",
+                )
                 await state.clear()
                 await session_manager.cleanup(admin_id)
                 await message.answer(
@@ -10613,11 +10818,13 @@ async def finish_admin_add_products(message: Message, state: FSMContext, admin_i
             )
 
     except Exception as exc:
+        await log_single_product_upload_result(data, admin_id, errors=[str(exc)])
         await state.clear()
         await session_manager.cleanup(admin_id)
         await message.answer(f"Не удалось сохранить товар: {html.escape(str(exc))}", reply_markup=admin_home_kb())
         return
 
+    await log_single_product_upload_result(data, admin_id, product_id=product_id)
     await state.clear()
     product = await get_product(product_id)
     await message.answer(
