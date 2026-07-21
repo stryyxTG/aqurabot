@@ -870,11 +870,12 @@ def admin_product_detail_kb(
     product_id: int,
     back_callback: str = "admin_stock_catalog",
     *,
+    action_back_callback: str | None = None,
     can_terminate_sessions: bool = False,
     can_fetch_code: bool = False,
     can_claim: bool = True,
 ) -> InlineKeyboardMarkup:
-    verify_back_token = admin_product_back_token(back_callback)
+    verify_back_token = admin_product_back_token(action_back_callback or back_callback)
     rows = [
         [InlineKeyboardButton(text="Проверить товар", callback_data=f"admin_verify_account:{product_id}:{verify_back_token}")],
         [
