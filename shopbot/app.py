@@ -6213,7 +6213,8 @@ async def admin_verify_account(query: CallbackQuery):
     except (IndexError, ValueError):
         await query.answer("Некорректный товар.", show_alert=True)
         return
-    back_callback = admin_product_back_callback_from_token(":".join(parts[2:]) if len(parts) > 2 else "catalog")
+    back_token = ":".join(parts[2:]) if len(parts) > 2 else "catalog"
+    detail_callback = admin_product_detail_callback_from_token(product_id, back_token)
     
     product = await get_product(product_id)
     if not product:
@@ -6275,7 +6276,7 @@ async def admin_verify_account(query: CallbackQuery):
             status_text,
             admin_product_detail_kb(
                 product_id,
-                back_callback=back_callback,
+                back_callback=detail_callback,
                 can_terminate_sessions=has_session,
                 can_fetch_code=can_fetch_code,
                 can_claim=can_claim,
@@ -6292,7 +6293,7 @@ async def admin_verify_account(query: CallbackQuery):
             f"<code>{html.escape(str(exc) or type(exc).__name__)}</code>",
             admin_product_detail_kb(
                 product_id,
-                back_callback=back_callback,
+                back_callback=detail_callback,
                 can_terminate_sessions=has_session,
                 can_fetch_code=has_session,
                 can_claim=current_product["status"] in {"available", "waiting_code"},
