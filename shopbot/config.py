@@ -30,9 +30,9 @@ class Settings:
     required_channel: str = "-1004296916422"
     required_channel_url: str = "https://t.me/+5wYNfVbpXJo2YzIy"
     rub_to_uah_rate: float = 0.45
-    device_model: str = "Samsung Galaxy S24 Ultra"
-    system_version: str = "Android 14" 
-    app_version: str = "11.5.1"
+    device_model: str = "Desktop"
+    system_version: str = "Windows 11"
+    app_version: str = "6.9.3 x64"
     lang_code: str = "ru"
     system_lang_code: str = "ru-RU"
 
@@ -76,9 +76,9 @@ def load_settings() -> Settings:
         or "https://t.me/+5wYNfVbpXJo2YzIy"
     ).strip()
     rub_to_uah_rate = _parse_float(os.getenv("RUB_TO_UAH_RATE") or raw.get("RUB_TO_UAH_RATE"), 0.45)
-    device_model = (os.getenv("TG_DEVICE_MODEL") or raw.get("TG_DEVICE_MODEL") or "Samsung Galaxy S24 Ultra").strip()
-    system_version = (os.getenv("TG_SYSTEM_VERSION") or raw.get("TG_SYSTEM_VERSION") or "Android 14").strip()
-    app_version = (os.getenv("TG_APP_VERSION") or raw.get("TG_APP_VERSION") or "11.5.1").strip()
+    device_model = (os.getenv("TG_DEVICE_MODEL") or raw.get("TG_DEVICE_MODEL") or "Desktop").strip()
+    system_version = (os.getenv("TG_SYSTEM_VERSION") or raw.get("TG_SYSTEM_VERSION") or "Windows 11").strip()
+    app_version = (os.getenv("TG_APP_VERSION") or raw.get("TG_APP_VERSION") or "6.9.3 x64").strip()
     lang_code = (os.getenv("TG_LANG_CODE") or raw.get("TG_LANG_CODE") or "ru").strip()
     system_lang_code = (os.getenv("TG_SYSTEM_LANG_CODE") or raw.get("TG_SYSTEM_LANG_CODE") or "ru-RU").strip()
 

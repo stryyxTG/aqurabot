@@ -19,7 +19,6 @@ DESKTOP_PROFILES = [
     ("Workstation", "Windows 11"),
     ("ThinkPad X1 Carbon", "Windows 11"),
     ("ThinkPad T14", "Windows 10"),
-    ("ThinkPad T14", "Ubuntu 24.04"),
     ("Dell XPS 13", "Windows 11"),
     ("Dell XPS 15", "Windows 11"),
     ("Dell Latitude 7420", "Windows 10"),
@@ -32,35 +31,10 @@ DESKTOP_PROFILES = [
     ("Lenovo Legion", "Windows 11"),
     ("Acer Aspire", "Windows 10"),
     ("MSI Modern", "Windows 11"),
-    ("Linux Workstation", "Ubuntu 22.04"),
-    ("Linux Workstation", "Ubuntu 24.04"),
-    ("Linux Desktop", "Debian 12"),
-    ("Linux Desktop", "Fedora 40"),
-    ("Linux Laptop", "Linux x86_64"),
 ]
 
 DESKTOP_APP_VERSIONS = [
     "6.9.3 x64",
-    "6.9.2 x64",
-    "6.9.1 x64",
-    "6.9.0 x64",
-    "6.8.6 x64",
-    "6.8.5 x64",
-    "6.8.4 x64",
-    "6.8.3 x64",
-    "6.8.2 x64",
-    "6.8.1 x64",
-    "6.8.0 x64",
-    "6.7.4 x64",
-    "6.7.3 x64",
-    "6.7.2 x64",
-    "6.7.1 x64",
-    "6.7.0 x64",
-    "6.6.4 x64",
-    "6.6.3 x64",
-    "6.6.2 x64",
-    "6.6.1 x64",
-    "6.6.0 x64",
 ]
 
 
