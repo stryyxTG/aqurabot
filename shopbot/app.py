@@ -1132,16 +1132,16 @@ async def log_product_upload(
         f"<b>User ID:</b> <code>{admin_id}</code>",
         f"<b>\u0421\u043f\u043e\u0441\u043e\u0431:</b> {html.escape(method)}",
         f"<b>\u041f\u043e\u043b\u0443\u0447\u0435\u043d\u043e \u0441\u0435\u0441\u0441\u0438\u0439:</b> {received}",
-        f"<b>\u0423\u0441\u043f\u0435\u0448\u043d\u043e \u0434\u043e\u0431\u0430\u0432\u043b\u0435\u043d\u043e:</b> {len(products)}",
     ]
+    if json_count:
+        lines.append(f"<b>JSON \u043f\u0440\u0438\u043d\u044f\u0442\u043e:</b> {json_count}")
+    lines.append(f"<b>\u0423\u0441\u043f\u0435\u0448\u043d\u043e \u0434\u043e\u0431\u0430\u0432\u043b\u0435\u043d\u043e:</b> {len(products)}")
     if country:
         lines.append(f"<b>\u0421\u0442\u0440\u0430\u043d\u0430:</b> {html.escape(country)}")
     if title:
         lines.append(f"<b>\u041e\u0442\u0434\u0435\u043b:</b> {render_rich_text(title)}")
     if price is not None:
         lines.append(f"<b>\u0426\u0435\u043d\u0430:</b> {fmt_money(float(price))}")
-    if json_count:
-        lines.append(f"<b>JSON \u043f\u0440\u0438\u043d\u044f\u0442\u043e:</b> {json_count}")
     if duplicates_found:
         lines.append(f"<b>\u041f\u043e\u0432\u0442\u043e\u0440\u043e\u0432 \u043e\u0431\u043d\u0430\u0440\u0443\u0436\u0435\u043d\u043e:</b> {duplicates_found}")
     if duplicates_uploaded:
