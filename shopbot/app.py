@@ -1161,9 +1161,24 @@ async def log_product_upload(
             phone = str(product["phone"] or "\u2014")
             username = str(product["username"] or "").strip()
             username_text = f" @{html.escape(username.lstrip('@'))}" if username else ""
-            lines.append(
-                f"\u2022 <code>#{product['product_id']}</code> \u00b7 <code>{html.escape(phone)}</code>{username_text}"
-            )
+            session_path = Path(str(product["session_path"] or "").strip())
+            session_name = session_path.name if session_path.name else "\u2014"
+            original_json = session_original_json_path(session_path) if session_path.name else None
+            metadata_json = session_json_path(session_path) if session_path.name else None
+            if original_json and original_json.is_file():
+                json_name = original_json.name
+                json_source = "original"
+            elif metadata_json and metadata_json.is_file():
+                json_name = metadata_json.name
+                json_source = "generated"
+            else:
+                json_name = "\u2014"
+                json_source = "missing"
+            lines.extend([
+                f"\u2022 <code>#{product['product_id']}</code> \u00b7 <code>{html.escape(phone)}</code>{username_text}",
+                f"  \u251c <b>session:</b> <code>{html.escape(session_name)}</code>",
+                f"  \u2514 <b>json:</b> <code>{html.escape(json_name)}</code> <i>({json_source})</i>",
+            ])
     if errors:
         lines.extend(["", "<b>\u041f\u0440\u0438\u0447\u0438\u043d\u044b:</b>"])
         for error in errors:
