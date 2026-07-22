@@ -14,7 +14,7 @@ import tempfile
 import time
 import uuid
 import zipfile
-from contextlib import closing
+from contextlib import closing, suppress
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -78,6 +78,7 @@ from .db import (
     list_product_departments,
     list_product_session_references,
     list_product_session_paths,
+    list_pending_crypto_invoices,
     list_sold_products_for_manual_cleanup,
     list_user_batch_purchases,
     list_user_purchase_groups,
@@ -4007,9 +4008,84 @@ def crypto_invoice_kb(invoice_id: str, pay_url: str | None) -> InlineKeyboardMar
     rows: list[list[InlineKeyboardButton]] = []
     if pay_url:
         rows.append([InlineKeyboardButton(text="\u041e\u043f\u043b\u0430\u0442\u0438\u0442\u044c", url=pay_url, icon_custom_emoji_id=BTN_ICON_PAY)])
-    rows.append([InlineKeyboardButton(text="\u041f\u0440\u043e\u0432\u0435\u0440\u0438\u0442\u044c \u043e\u043f\u043b\u0430\u0442\u0443", callback_data=f"check_pay:{invoice_id}", icon_custom_emoji_id=BTN_ICON_CHECK)])
     rows.append([InlineKeyboardButton(text="\u0412 \u043c\u0435\u043d\u044e", callback_data="menu_home", icon_custom_emoji_id=BTN_ICON_BACK)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def sync_crypto_invoice(stored) -> dict:
+    """Fetch one invoice from Crypto Pay and atomically credit a verified payment."""
+    invoice_id = str(stored["invoice_id"])
+    amount = float(stored["amount"])
+    fiat = (stored["fiat"] or settings.cryptopay_fiat).upper()
+    response = await call_crypto_pay("getInvoices", {"invoice_ids": invoice_id})
+    invoices = ((response.get("result") or {}).get("items") or []) if isinstance(response, dict) else []
+    if not response.get("ok") or not invoices:
+        return {"state": "api_error", "invoice_id": invoice_id}
+
+    invoice = invoices[0]
+    if str(invoice.get("invoice_id") or invoice_id) != invoice_id:
+        logger.error("CryptoPay returned different invoice | requested=%s | payload=%s", invoice_id, invoice)
+        return {"state": "invalid", "invoice_id": invoice_id}
+
+    status = str(invoice.get("status") or "created").lower()
+    if status == "paid":
+        if not crypto_invoice_amount_matches(invoice, amount) or not crypto_invoice_fiat_matches(invoice, fiat):
+            logger.error(
+                "CryptoPay invoice amount mismatch | invoice=%s | expected=%s %s | payload=%s",
+                invoice_id,
+                amount,
+                fiat,
+                invoice,
+            )
+            await mark_crypto_invoice_status(invoice_id, "invalid")
+            return {"state": "invalid", "invoice_id": invoice_id}
+        processed, balance = await process_crypto_topup(invoice_id, int(stored["user_id"]), amount)
+        if processed:
+            await log_purchase("crypto_topup", user_id=int(stored["user_id"]), invoice_id=invoice_id, amount=amount)
+        return {
+            "state": "credited" if processed else "already_credited",
+            "invoice_id": invoice_id,
+            "amount": amount,
+            "balance": balance,
+            "user_id": int(stored["user_id"]),
+        }
+
+    if status == "expired":
+        await mark_crypto_invoice_status(invoice_id, "expired")
+        return {"state": "expired", "invoice_id": invoice_id}
+
+    await mark_crypto_invoice_status(invoice_id, status)
+    return {"state": status, "invoice_id": invoice_id}
+
+
+async def crypto_topup_watcher() -> None:
+    """Credit paid Crypto Bot invoices without requiring a button press from the buyer."""
+    while True:
+        try:
+            pending_invoices = await list_pending_crypto_invoices()
+            for stored in pending_invoices:
+                result = await sync_crypto_invoice(stored)
+                if result.get("state") != "credited":
+                    continue
+                user_id = int(result["user_id"])
+                await bot.send_message(
+                    user_id,
+                    f"{ICON_SUCCESS} <b>\u041e\u043f\u043b\u0430\u0442\u0430 \u043f\u043e\u043b\u0443\u0447\u0435\u043d\u0430</b>\n\n"
+                    f"{ICON_COIN} \u0411\u0430\u043b\u0430\u043d\u0441 \u043f\u043e\u043f\u043e\u043b\u043d\u0435\u043d \u043d\u0430 <b>{fmt_money(float(result['amount']))}</b>.\n"
+                    f"\u0422\u0435\u043a\u0443\u0449\u0438\u0439 \u0431\u0430\u043b\u0430\u043d\u0441: <b>{fmt_money(float(result['balance']))}</b>.",
+                    reply_markup=back_to_main_kb(is_admin(user_id)),
+                )
+                logger.info(
+                    "CryptoPay topup auto-credited | invoice=%s | user=%s | amount=%s",
+                    result["invoice_id"],
+                    user_id,
+                    result["amount"],
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("CryptoPay automatic topup watcher failed")
+        await asyncio.sleep(8)
 
 
 @dp.callback_query(F.data == "user_topup_start")
@@ -4150,11 +4226,11 @@ async def user_topup_amount(message: Message, state: FSMContext):
         return
 
     text = (
-        f"{ICON_CRYPTO} <b>Счет Crypto Bot создан</b>\n\n"
-        f"<b>Сумма:</b> {credit_amount:.2f} {html.escape(settings.cryptopay_fiat)}\n"
-        "<b>Статус:</b> ожидает оплаты\n\n"
-        "Откройте счет в Crypto Bot и оплатите удобной криптовалютой. "
-        f"После оплаты нажмите проверку, {ICON_COIN} баланс обновится автоматически."
+        f"{ICON_CRYPTO} <b>\u0421\u0447\u0435\u0442 Crypto Bot \u0441\u043e\u0437\u0434\u0430\u043d</b>\n\n"
+        f"<b>\u0421\u0443\u043c\u043c\u0430:</b> {credit_amount:.2f} {html.escape(settings.cryptopay_fiat)}\n"
+        "<b>\u0421\u0442\u0430\u0442\u0443\u0441:</b> \u043e\u0436\u0438\u0434\u0430\u0435\u0442 \u043e\u043f\u043b\u0430\u0442\u044b\n\n"
+        "\u041e\u0442\u043a\u0440\u043e\u0439\u0442\u0435 \u0441\u0447\u0435\u0442 \u0432 Crypto Bot \u0438 \u043e\u043f\u043b\u0430\u0442\u0438\u0442\u0435 \u0443\u0434\u043e\u0431\u043d\u043e\u0439 \u043a\u0440\u0438\u043f\u0442\u043e\u0432\u0430\u043b\u044e\u0442\u043e\u0439. "
+        f"\u041f\u043e\u0441\u043b\u0435 \u043e\u043f\u043b\u0430\u0442\u044b {ICON_COIN} \u0431\u0430\u043b\u0430\u043d\u0441 \u0437\u0430\u0447\u0438\u0441\u043b\u0438\u0442\u0441\u044f \u0430\u0432\u0442\u043e\u043c\u0430\u0442\u0438\u0447\u0435\u0441\u043a\u0438."
     )
     kb = crypto_invoice_kb(invoice_id, pay_url)
     await message.answer(text, reply_markup=kb)
@@ -11280,7 +11356,16 @@ async def main_async() -> None:
     dp.callback_query.outer_middleware(CallbackFSMGuardMiddleware())
     dp.callback_query.outer_middleware(SubscriptionMiddleware())
     dp.callback_query.outer_middleware(AgreementMiddleware())
-    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+    watcher_task = None
+    if FEATURE_TOPUP_CRYPTO and settings.cryptopay_token:
+        watcher_task = asyncio.create_task(crypto_topup_watcher(), name="crypto-topup-watcher")
+    try:
+        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+    finally:
+        if watcher_task:
+            watcher_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await watcher_task
 
 
 def main() -> None:

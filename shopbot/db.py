@@ -2001,6 +2001,21 @@ async def get_crypto_invoice(invoice_id: str):
             return await cursor.fetchone()
 
 
+async def list_pending_crypto_invoices(limit: int = 25):
+    safe_limit = max(1, min(int(limit), 100))
+    async with get_db_conn() as db:
+        async with db.execute(
+            """
+            SELECT * FROM crypto_invoices
+            WHERE status IN ('created', 'active')
+            ORDER BY created_at ASC
+            LIMIT ?
+            """,
+            (safe_limit,),
+        ) as cursor:
+            return await cursor.fetchall()
+
+
 async def mark_crypto_invoice_status(invoice_id: str, status: str, paid_at: str | None = None) -> None:
     async with get_db_conn() as db:
         if paid_at:
