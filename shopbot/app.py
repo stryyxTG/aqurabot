@@ -1160,6 +1160,7 @@ async def log_product_upload(
         lines.extend(["", "<b>\u0414\u043e\u0431\u0430\u0432\u043b\u0435\u043d\u043d\u044b\u0435 \u0442\u043e\u0432\u0430\u0440\u044b:</b>"])
         for product in products:
             phone = str(product["phone"] or "\u2014")
+            telegram_id = str(product["telegram_id"] or "\u2014")
             username = str(product["username"] or "").strip()
             username_text = f" @{html.escape(username.lstrip('@'))}" if username else ""
             session_path = Path(str(product["session_path"] or "").strip())
@@ -1177,7 +1178,7 @@ async def log_product_upload(
                 json_source = "missing"
             lines.extend([
                 f"\u2022 <code>#{product['product_id']}</code> \u00b7 <code>{html.escape(phone)}</code>{username_text}",
-                f"  \u251c <b>ID аккаунта:</b> <code>{html.escape(str(product['telegram_id'] or '\u2014'))}</code>",
+                f"  \u251c <b>ID аккаунта:</b> <code>{html.escape(telegram_id)}</code>",
                 f"  \u251c <b>session:</b> <code>{html.escape(session_name)}</code>",
                 f"  \u2514 <b>json:</b> <code>{html.escape(json_name)}</code> <i>({json_source})</i>",
             ])
