@@ -1177,7 +1177,7 @@ async def log_product_upload(
                 json_source = "missing"
             lines.extend([
                 f"\u2022 <code>#{product['product_id']}</code> \u00b7 <code>{html.escape(phone)}</code>{username_text}",
-                f"  \u251c <b>ID аккаунта:</b> <code>{html.escape(str(product['telegram_id'] or "\u2014"))}</code>",
+                f"  \u251c <b>ID аккаунта:</b> <code>{html.escape(str(product['telegram_id'] or '\u2014'))}</code>",
                 f"  \u251c <b>session:</b> <code>{html.escape(session_name)}</code>",
                 f"  \u2514 <b>json:</b> <code>{html.escape(json_name)}</code> <i>({json_source})</i>",
             ])
