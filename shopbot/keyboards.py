@@ -30,6 +30,8 @@ BTN_ICON_TG_PREMIUM = "6028338546736107668"
 BTN_ICON_TG_STARS = "5463289097336405244"
 BTN_ICON_PERIOD = "5983150113483134607"
 AGREEMENT_URL = "https://telegra.ph/Politika-konfidencialnosti-06-30-45"
+RECOMMENDATIONS_URL = "https://telegra.ph/Rekomendacii-07-22"
+FAQ_URL = "https://telegra.ph/FAQ-07-22-20"
 
 
 def main_menu_kb(is_admin: bool) -> InlineKeyboardMarkup:
@@ -53,11 +55,12 @@ def main_menu_kb(is_admin: bool) -> InlineKeyboardMarkup:
 def help_menu_kb(is_admin: bool) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text="Условия", url=AGREEMENT_URL)],
+        [InlineKeyboardButton(text="Рекомендации", url=RECOMMENDATIONS_URL)],
+        [InlineKeyboardButton(text="Часто задаваемые вопросы FAQ", url=FAQ_URL)],
         [InlineKeyboardButton(text="Связаться с поддержкой", url=settings.support_url, icon_custom_emoji_id=BTN_ICON_SUPPORT)],
         [InlineKeyboardButton(text="В меню", callback_data="menu_home", icon_custom_emoji_id=BTN_ICON_HOME)],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
-
 
 def agreement_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
@@ -66,7 +69,6 @@ def agreement_kb() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="Принять", callback_data="agreement_accept", icon_custom_emoji_id=BTN_ICON_CHECK)],
         ]
     )
-
 
 def purchase_success_kb(is_admin: bool) -> InlineKeyboardMarkup:
     rows = [
@@ -150,7 +152,7 @@ def batch_download_confirm_kb(batch_id: str, page: int, file_type: str) -> Inlin
 def cart_kb(*, item_rows: list[list[InlineKeyboardButton]] | None = None, can_checkout: bool) -> InlineKeyboardMarkup:
     rows = list(item_rows or [])
     if can_checkout:
-        rows.append([InlineKeyboardButton(text="\u0418\u0437\u043c\u0435\u043d\u0438\u0442\u044c", callback_data="cart_edit_list:0")])
+        rows.append([InlineKeyboardButton(text="\u0418\u0437\u043c\u0435\u043d\u0438\u0442\u044c \u043a\u043e\u0440\u0437\u0438\u043d\u0443", callback_data="cart_edit_list:0")])
         rows.append([InlineKeyboardButton(text="\u041e\u0447\u0438\u0441\u0442\u0438\u0442\u044c \u043a\u043e\u0440\u0437\u0438\u043d\u0443", callback_data="cart_clear", icon_custom_emoji_id=BTN_ICON_CANCEL)])
         rows.append([InlineKeyboardButton(text="\u041e\u043f\u043b\u0430\u0442\u0438\u0442\u044c \u0432\u0441\u0451", callback_data="cart_checkout", icon_custom_emoji_id=BTN_ICON_PAY)])
     rows.append([InlineKeyboardButton(text="\u0412 \u043c\u0435\u043d\u044e", callback_data="menu_home", icon_custom_emoji_id=BTN_ICON_HOME)])

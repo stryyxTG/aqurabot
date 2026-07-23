@@ -1177,6 +1177,7 @@ async def log_product_upload(
                 json_source = "missing"
             lines.extend([
                 f"\u2022 <code>#{product['product_id']}</code> \u00b7 <code>{html.escape(phone)}</code>{username_text}",
+                f"  \u251c <b>ID аккаунта:</b> <code>{html.escape(str(product["telegram_id"] or "\u2014"))}</code>",
                 f"  \u251c <b>session:</b> <code>{html.escape(session_name)}</code>",
                 f"  \u2514 <b>json:</b> <code>{html.escape(json_name)}</code> <i>({json_source})</i>",
             ])
@@ -2519,7 +2520,6 @@ def catalog_filter_menu_kb(sort_mode: str | None) -> InlineKeyboardMarkup:
     ]
     if sort_mode:
         rows.append([InlineKeyboardButton(text="Сбросить сортировку", callback_data="catalog_filter_clear_menu", icon_custom_emoji_id=BTN_ICON_CANCEL)])
-    rows.append([InlineKeyboardButton(text="Назад к странам", callback_data=catalog_filter_back_callback(), icon_custom_emoji_id=BTN_ICON_BACK)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -5418,8 +5418,7 @@ async def purchase_batch_detail(query: CallbackQuery):
                 callback_data=f"my_purchase:{item['purchase_id']}:{page}:{batch_id}",
             )
         ])
-    downloadable = sum(1 for item in purchases if product_session_file(item))
-    can_bulk_download = len(purchases) > 1 and downloadable > 1
+    can_bulk_download = len(purchases) > 1
     text = (
         f"{ICON_SPARKLE} <b>Заказ</b>\n\n"
         f"Дата: <b>{date}</b>\n"
@@ -7315,7 +7314,8 @@ async def admin_broadcast_start(query: CallbackQuery, state: FSMContext):
     await safe_edit(
         query.message,
         "<b>Рассылка</b>\n\n"
-        "Отправьте текст рассылки. Premium emoji можно отправить обычным сообщением или вставить HTML вида:\n"
+        "Отправьте текст или медиа для рассылки. Можно переслать сообщение: медиа, форматирование и Premium emoji сохранятся, а отметки о пересылке у получателей не будет.\n\n"
+        "Premium emoji можно отправить обычным сообщением или вставить HTML вида:\n"
         '<code>&lt;tg-emoji emoji-id="6028338546736107668"&gt;⭐️&lt;/tg-emoji&gt;</code>',
         cancel_flow_kb("admin_home"),
     )
@@ -7325,11 +7325,30 @@ async def admin_broadcast_start(query: CallbackQuery, state: FSMContext):
 async def admin_broadcast_text(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         return
+    raw_text = message.text or ""
+    if "<tg-emoji" not in raw_text:
+        await state.update_data(
+            broadcast_source_chat_id=message.chat.id,
+            broadcast_source_message_id=message.message_id,
+            broadcast_html=None,
+        )
+        try:
+            await bot.copy_message(
+                chat_id=message.chat.id,
+                from_chat_id=message.chat.id,
+                message_id=message.message_id,
+                reply_markup=broadcast_confirm_kb(),
+            )
+        except TelegramAPIError:
+            logger.exception("Could not create broadcast preview | admin=%s | message=%s", message.from_user.id, message.message_id)
+            await message.answer("Не удалось подготовить предпросмотр этого сообщения.")
+        return
+
     text = broadcast_rich_text(message)
     if not text:
-        await message.answer("Текст рассылки пустой.")
+        await message.answer("Сообщение для рассылки пустое.")
         return
-    await state.update_data(broadcast_html=text)
+    await state.update_data(broadcast_html=text, broadcast_source_chat_id=None, broadcast_source_message_id=None)
     await message.answer(
         "<b>Предпросмотр рассылки</b>\n\n"
         f"{text}",
@@ -7337,14 +7356,33 @@ async def admin_broadcast_text(message: Message, state: FSMContext):
     )
 
 
-async def send_broadcast_to_user(user_id: int, text: str) -> str:
+async def send_broadcast_to_user(
+    user_id: int,
+    *,
+    text: str | None = None,
+    source_chat_id: int | None = None,
+    source_message_id: int | None = None,
+) -> str:
+    async def send() -> None:
+        if source_chat_id is not None and source_message_id is not None:
+            await bot.copy_message(
+                chat_id=user_id,
+                from_chat_id=source_chat_id,
+                message_id=source_message_id,
+            )
+            return
+        if text:
+            await bot.send_message(user_id, text, parse_mode=ParseMode.HTML)
+            return
+        raise ValueError("Broadcast payload is empty")
+
     try:
-        await bot.send_message(user_id, text, parse_mode=ParseMode.HTML)
+        await send()
         return "sent"
     except TelegramRetryAfter as exc:
         await asyncio.sleep(float(getattr(exc, "retry_after", 1)) + 1)
         try:
-            await bot.send_message(user_id, text, parse_mode=ParseMode.HTML)
+            await send()
             return "sent"
         except TelegramForbiddenError:
             return "unavailable"
@@ -7374,21 +7412,27 @@ async def admin_broadcast_send(query: CallbackQuery, state: FSMContext):
         return
     data = await state.get_data()
     text = data.get("broadcast_html") or data.get("broadcast_text")
-    if not text:
-        await safe_edit(query.message, "Текст рассылки не найден.", admin_home_kb())
+    source_chat_id = data.get("broadcast_source_chat_id")
+    source_message_id = data.get("broadcast_source_message_id")
+    if not text and not (source_chat_id and source_message_id):
+        await query.message.answer("Сообщение для рассылки не найдено.", reply_markup=admin_home_kb())
         await state.clear()
         return
     user_ids = await list_user_ids()
     sent = 0
     unavailable = 0
     errors = 0
-    await safe_edit(
-        query.message,
+    progress = await query.message.answer(
         f"{ICON_KEYBOARD} <b>Рассылка запущена</b>\n\n"
         f"Пользователей: <b>{len(user_ids)}</b>",
     )
     for user_id in user_ids:
-        status = await send_broadcast_to_user(user_id, text)
+        status = await send_broadcast_to_user(
+            user_id,
+            text=text,
+            source_chat_id=int(source_chat_id) if source_chat_id is not None else None,
+            source_message_id=int(source_message_id) if source_message_id is not None else None,
+        )
         if status == "sent":
             sent += 1
         elif status == "unavailable":
@@ -7398,7 +7442,7 @@ async def admin_broadcast_send(query: CallbackQuery, state: FSMContext):
         await asyncio.sleep(0.06)
     await state.clear()
     await safe_edit(
-        query.message,
+        progress,
         f"{ICON_SUCCESS} <b>Рассылка завершена</b>\n\n"
         f"Всего пользователей: <b>{len(user_ids)}</b>\n"
         f"Отправлено: <b>{sent}</b>\n"
@@ -7406,7 +7450,6 @@ async def admin_broadcast_send(query: CallbackQuery, state: FSMContext):
         f"Ошибок: <b>{errors}</b>",
         admin_home_kb(),
     )
-
 
 @dp.callback_query(F.data == "admin_stats")
 async def admin_stats(query: CallbackQuery):
